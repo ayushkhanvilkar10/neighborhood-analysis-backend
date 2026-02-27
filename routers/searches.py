@@ -15,6 +15,7 @@ async def health_check():
 @router.post("/searches", response_model=SearchResponse, status_code=status.HTTP_201_CREATED)
 async def create_search(search: SearchCreate, current=Depends(get_current_user)):
     user, token = current["user"], current["token"]
+    supabase.postgrest.auth(token)
     row = {
         "user_id": str(user.id),
         "neighborhood": search.neighborhood,
@@ -32,6 +33,7 @@ async def create_search(search: SearchCreate, current=Depends(get_current_user))
 @router.get("/searches", response_model=list[SearchResponse])
 async def list_searches(current=Depends(get_current_user)):
     user, token = current["user"], current["token"]
+    supabase.postgrest.auth(token)
     result = (
         supabase.table("saved_searches")
         .select("*")
