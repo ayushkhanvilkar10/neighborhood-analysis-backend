@@ -4,6 +4,7 @@ from supabase import create_client
 
 from auth import get_current_user
 from models import SearchCreate, SearchResponse
+from agent.neighborhood_analysis import graph
 
 router = APIRouter()
 
@@ -30,7 +31,22 @@ async def create_search(search: SearchCreate, current=Depends(get_current_user))
         "zip_code": search.zip_code,
     }
     result = db.table("saved_searches").insert(row).execute()
-    return result.data[0]
+    saved = result.data[0]
+
+    # Run the agent — street_name maps to the street field
+    analysis = await graph.ainvoke({
+        "neighborhood": search.neighborhood,
+        "street_name":  search.street,
+        "zip_code":     search.zip_code,
+    })
+
+    return {
+        **saved,
+        "requests_311":    analysis["requests_311"],
+        "crime_safety":    analysis["crime_safety"],
+        "property_mix":    analysis["property_mix"],
+        "overall_verdict": analysis["overall_verdict"],
+    }
 
 
 @router.get("/searches", response_model=list[SearchResponse])
