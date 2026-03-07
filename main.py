@@ -7,7 +7,7 @@ app = FastAPI(title="Neighborhood Analysis API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["https://neighborhood-analysis-frontend.vercel.app"],
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
 )
