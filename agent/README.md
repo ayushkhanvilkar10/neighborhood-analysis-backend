@@ -1,6 +1,6 @@
 # Neighborhood Analysis Agent
 
-A LangGraph-powered agent that analyzes Boston neighborhoods by making three parallel calls to the Boston Open Data API, then synthesizing the results into a structured report using GPT-4o.
+A LangGraph-powered agent that analyzes Boston neighborhoods by making eight parallel calls to the Boston Open Data API and the ArcGIS REST API, then synthesizing the results into a structured report using GPT-4o.
 
 ---
 
@@ -8,12 +8,17 @@ A LangGraph-powered agent that analyzes Boston neighborhoods by making three par
 
 ```
 START
-  ├── fetch_311       ─┐
-  ├── fetch_crime     ─┼── (parallel) ──► summarize ──► END
-  └── fetch_property  ─┘
+  ├── fetch_311             ─┐
+  ├── fetch_crime           ─┤
+  ├── fetch_property        ─┤
+  ├── fetch_permits         ─┼── (parallel) ──► summarize ──► END
+  ├── fetch_entertainment   ─┤
+  ├── fetch_traffic_safety  ─┤
+  ├── fetch_gun_violence    ─┤
+  └── fetch_green_space     ─┘
 ```
 
-The three fetch nodes run in parallel using LangGraph's fan-out/fan-in pattern. Each node writes its result to a shared `context` list in state using an `operator.add` reducer, which appends all three results without conflict. Once all three finish, LangGraph automatically fans back in to the `summarize` node, which passes the full context to GPT-4o and returns a structured four-field report.
+All eight fetch nodes run in parallel using LangGraph's fan-out/fan-in pattern. Each node writes its result to a shared `context` list in state using an `operator.add` reducer. Once all eight finish, LangGraph fans back in to the `summarize` node, which passes the full context to GPT-4o and returns a structured nine-field report.
 
 ---
 
@@ -21,225 +26,228 @@ The three fetch nodes run in parallel using LangGraph's fan-out/fan-in pattern. 
 
 ```python
 class State(TypedDict):
-    neighborhood: str       # e.g. "Back Bay"
-    street_name:  str       # e.g. "BOYLSTON ST"  (uppercase, as it appears in BPD dataset)
-    zip_code:     str       # e.g. "02116"
-    context:      Annotated[list[str], operator.add]  # populated by the three fetch nodes
+    neighborhood: str   # e.g. "Jamaica Plain"
+    street_name:  str   # e.g. "CREIGHTON ST" (uppercase, as it appears in BPD dataset)
+    zip_code:     str   # e.g. "02130"
+    context:      Annotated[list[str], operator.add]  # populated by the eight fetch nodes
 ```
-
-The `context` key uses `operator.add` as a reducer so all three parallel nodes can safely append to the same list in the same graph step.
 
 **Output:**
 
 ```python
 class OutputState(TypedDict):
-    requests_311:    str   # Analysis of 311 service request patterns
-    crime_safety:    str   # Analysis of crime incidents on the street
-    property_mix:    str   # Analysis of property types in the zip code
-    overall_verdict: str   # Synthesized buyer-focused verdict
+    requests_311:        str   # Analysis of 311 service request patterns
+    crime_safety:        str   # Analysis of crime incidents on the street
+    property_mix:        str   # Analysis of property types in the zip code
+    permit_activity:     str   # Analysis of building permit investment activity
+    entertainment_scene: str   # Analysis of entertainment license unit types
+    traffic_safety:      str   # Analysis of crashes and fatalities on the street
+    gun_violence:        str   # Analysis of shootings and shots fired in the district
+    green_space:         str   # Analysis of trees and open space in the neighborhood
+    overall_verdict:     str   # Synthesized buyer-focused verdict across all datasets
 ```
+
+---
+
+## Neighborhood Mappings
+
+Two lookup dictionaries are defined at the top of `neighborhood_analysis.py`. Both use the same 21 canonical neighborhood keys — the strings users enter into the form.
+
+### `NEIGHBORHOOD_TO_DISTRICT`
+Maps neighborhood names to BPD district codes. Used by `fetch_crime` and `fetch_gun_violence`.
+
+| Neighborhood | District |
+|---|---|
+| Back Bay / South End / Fenway | D4 |
+| Beacon Hill / Downtown | A1 |
+| Charlestown | A15 |
+| East Boston | A7 |
+| Roxbury | B2 |
+| Mattapan / Greater Mattapan | B3 |
+| Dorchester | C11 |
+| South Boston | C6 |
+| Jamaica Plain / Mission Hill / Roslindale | E13 |
+| West Roxbury | E5 |
+| Hyde Park | E18 |
+| Allston / Brighton | D14 |
+
+### `NEIGHBORHOOD_TO_BPRD`
+Maps neighborhood names to BPRD Trees ArcGIS neighborhood values. Used by `fetch_green_space`.
+
+| Agent Neighborhood | BPRD Value |
+|---|---|
+| Back Bay / Beacon Hill | `Back Bay/Beacon Hill` |
+| Allston / Brighton | `Allston-Brighton` |
+| Fenway / Kenmore / Audubon Circle / Longwood | `Fenway/Longwood` |
+| Downtown / Financial District | `Central Boston` |
+| All others | Direct match |
 
 ---
 
 ## Data Sources
 
-All three data sources are from the [Boston Open Data Portal](https://data.boston.gov) and are queried via the CKAN `datastore_search_sql` API endpoint:
-
+All CKAN sources are queried via:
 ```
 https://data.boston.gov/api/3/action/datastore_search_sql?sql=<query>
+```
+
+The BPRD Trees source is queried via the ArcGIS REST API:
+```
+https://services.arcgis.com/sFnw0xNflSi8J0uh/arcgis/rest/services/BPRD_Trees/FeatureServer/0/query
 ```
 
 ---
 
 ### Tool 1 — `fetch_311` (311 Service Requests)
 
-Fetches the top 15 most frequent 311 complaint types filed in the neighborhood.
+Fetches the top 15 most frequent 311 complaint types for the neighborhood.
 
-**Dataset ID:** `1a0b420d-99f1-4887-9851-990b2a5a6e17`
+**Dataset ID:** `1a0b420d-99f1-4887-9851-990b2a5a6e17`  
+**Filter:** `neighborhood`
 
-**Input:** `neighborhood` (e.g. `Back Bay`)
-
-**Example query:**
-```sql
-SELECT "type", COUNT(*) as count
-FROM "1a0b420d-99f1-4887-9851-990b2a5a6e17"
-WHERE "neighborhood" = 'Back Bay'
-GROUP BY "type"
-ORDER BY count DESC
-LIMIT 15
-```
-
-**Browser URL:**
-```
-https://data.boston.gov/api/3/action/datastore_search_sql?sql=SELECT "type", COUNT(*) as count FROM "1a0b420d-99f1-4887-9851-990b2a5a6e17" WHERE "neighborhood" = 'Back Bay' GROUP BY "type" ORDER BY count DESC LIMIT 15
-```
-
-**Example result (Back Bay):**
-
-| type | count |
-|---|---|
-| Request for Snow Plowing | 339 |
-| Parking Enforcement | 257 |
-| Unshoveled Sidewalk | 189 |
-| Improper Storage of Trash (Barrels) | 174 |
-| CE Collection | 114 |
-| Request for Pothole Repair | 103 |
-| Requests for Street Cleaning | 76 |
-| Traffic Signal Inspection | 56 |
-| Needle Pickup | 56 |
-| Pick up Dead Animal | 47 |
-| Sidewalk Repair (Make Safe) | 42 |
-| Missed Trash/Recycling/Yard Waste/Bulk Item | 38 |
-| Poor Conditions of Property | 38 |
-| Sign Repair | 24 |
-| Encampments | 21 |
-
-**Notable signal types the LLM is instructed to flag:**
-- `CE Collection` → Code Enforcement Collection (city pursuing code violations)
+**Signal types flagged in the prompt:**
+- `CE Collection` → Code Enforcement (city pursuing code violations)
 - `Needle Pickup` / `Encampments` → visible substance abuse or homelessness
 - `Unsatisfactory Living Conditions` / `Heat - Excessive/Insufficient` → housing quality issues
-- `Space Savers` → parking scarcity (post-snowstorm parking disputes)
+- `Space Savers` → parking scarcity post-snowstorm
 - `Illegal Dumping` / `Abandoned Vehicles` → neighborhood neglect
 
 ---
 
 ### Tool 2 — `fetch_crime` (Crime & Safety)
 
-Fetches the top 15 most frequent crime/incident types reported on the specific street in the current year.
+Fetches the top 15 most frequent crime types on the specific street in the current year.
 
-**Dataset ID:** `b973d8cb-eeb2-4e7e-99da-c92938efc9c0`
+**Dataset ID:** `b973d8cb-eeb2-4e7e-99da-c92938efc9c0`  
+**Filter:** `DISTRICT` (resolved via `NEIGHBORHOOD_TO_DISTRICT`) + `STREET` + `YEAR = '2026'`
 
-**Input:** `street_name` + BPD district code (resolved from `neighborhood` via `NEIGHBORHOOD_TO_DISTRICT` mapping)
-
-**Neighborhood → BPD District mapping:**
-
-| Neighborhood | District |
-|---|---|
-| Back Bay | D4 |
-| South End | D4 |
-| Fenway / Kenmore / Audubon Circle / Longwood | D4 |
-| Beacon Hill | A1 |
-| Downtown / Financial District | A1 |
-| Charlestown | A15 |
-| East Boston | A7 |
-| Roxbury | B2 |
-| Mattapan / Greater Mattapan | B3 |
-| Dorchester | C11 |
-| South Boston / South Boston Waterfront | C6 |
-| Jamaica Plain / Mission Hill / Roslindale | E13 |
-| West Roxbury | E5 |
-| Hyde Park | E18 |
-| Allston / Brighton | D14 |
-
-**Example query:**
-```sql
-SELECT "OFFENSE_DESCRIPTION", COUNT(*) as count
-FROM "b973d8cb-eeb2-4e7e-99da-c92938efc9c0"
-WHERE "DISTRICT" = 'D4'
-AND "STREET" = 'BOYLSTON ST'
-AND "YEAR" = '2026'
-GROUP BY "OFFENSE_DESCRIPTION"
-ORDER BY count DESC
-LIMIT 15
-```
-
-**Browser URL:**
-```
-https://data.boston.gov/api/3/action/datastore_search_sql?sql=SELECT "OFFENSE_DESCRIPTION", COUNT(*) as count FROM "b973d8cb-eeb2-4e7e-99da-c92938efc9c0" WHERE "DISTRICT" = 'D4' AND "STREET" = 'BOYLSTON ST' AND "YEAR" = '2026' GROUP BY "OFFENSE_DESCRIPTION" ORDER BY count DESC LIMIT 15
-```
-
-**Example result (Boylston St, District D4, 2026):**
-
-| OFFENSE_DESCRIPTION | count |
-|---|---|
-| LARCENY SHOPLIFTING | 123 |
-| SICK ASSIST | 22 |
-| INVESTIGATE PERSON | 18 |
-| ASSAULT - SIMPLE | 11 |
-| INVESTIGATE PROPERTY | 8 |
-| LARCENY THEFT FROM BUILDING | 7 |
-| TOWED MOTOR VEHICLE | 5 |
-| VANDALISM | 5 |
-| TRESPASSING | 4 |
-| BURGLARY - COMMERICAL | 4 |
-| ROBBERY | 3 |
-| PROPERTY - LOST/ MISSING | 3 |
-| M/V - LEAVING SCENE - PROPERTY DAMAGE | 3 |
-| SICK ASSIST - DRUG RELATED ILLNESS | 2 |
-| LICENSE PREMISE VIOLATION | 2 |
-
-**Notable signal types the LLM is instructed to flag:**
+**Signal types flagged in the prompt:**
 - `INVESTIGATE PERSON` / `INVESTIGATE PROPERTY` → procedural, not actual crimes
 - Auto theft, drug offenses, robbery, threats → flagged explicitly
 - Low counts on a residential street → noted as reassuring
-
-> **Note:** `YEAR` is hardcoded to `'2026'` in the query. If the BPD dataset hasn't been updated with current year data yet, the node will return a "no records found" message and the LLM will note the data gap.
+- If fewer than 10 incidents, data limitation noted briefly at end of field
 
 ---
 
 ### Tool 3 — `fetch_property` (Property Assessment)
 
-Fetches the top 15 most frequent property use types in the zip code from the Boston property assessment dataset.
+Fetches the top 15 most frequent property use types in the zip code.
 
-**Dataset ID:** `ee73430d-96c0-423e-ad21-c4cfb54c8961`
+**Dataset ID:** `ee73430d-96c0-423e-ad21-c4cfb54c8961`  
+**Filter:** `ZIP_CODE`
 
-**Input:** `zip_code` (e.g. `02116`)
-
-**Example query:**
-```sql
-SELECT "LU_DESC", COUNT(*) as count
-FROM "ee73430d-96c0-423e-ad21-c4cfb54c8961"
-WHERE "ZIP_CODE" = '02116'
-GROUP BY "LU_DESC"
-ORDER BY count DESC
-LIMIT 15
-```
-
-**Browser URL:**
-```
-https://data.boston.gov/api/3/action/datastore_search_sql?sql=SELECT "LU_DESC", COUNT(*) as count FROM "ee73430d-96c0-423e-ad21-c4cfb54c8961" WHERE "ZIP_CODE" = '02116' GROUP BY "LU_DESC" ORDER BY count DESC LIMIT 15
-```
-
-**Example result (02116 — Back Bay):**
-
-| LU_DESC | count |
-|---|---|
-| RESIDENTIAL CONDO | 6832 |
-| CONDO MAIN | 839 |
-| CONDO PARKING (RES) | 479 |
-| SINGLE FAM DWELLING | 318 |
-| APT 7-30 UNITS | 148 |
-| APT 4-6 UNITS | 113 |
-| RET/WHSL/SERVICE | 107 |
-| COMM MULTI-USE | 91 |
-| TWO-FAM DWELLING | 83 |
-| THREE-FAM DWELLING | 79 |
-| RES /COMMERCIAL USE | 77 |
-| OFFICE CONDO | 60 |
-| OTHER EXEMPT BLDG | 49 |
-| RETAIL CONDO | 42 |
-| OFFICE 3-9 STORY | 31 |
-
-**Notable property types the LLM is instructed to flag:**
-- `CONDO PARKING (RES)` → parking sold separately, extra cost for buyers
+**Signal types flagged in the prompt:**
+- `CONDO PARKING (RES)` → parking sold separately, extra cost
 - `SUBSD HOUSING S-8` → Section 8 subsidized housing
-- `CITY OF BOSTON` / `BOST REDEVELOP AUTH` / `BOS HOUSING AUTHOR` → publicly owned land
-- `RES LAND (Unusable)` → vacant lots, possible blight or future development
+- `CITY OF BOSTON` / `BOST REDEVELOP AUTH` → publicly owned land
+- `RES LAND (Unusable)` → vacant lots, blight or future development
 - Two- and three-family home dominance → rental-heavy neighborhood
+
+---
+
+### Tool 4 — `fetch_permits` (Building Permits)
+
+Fetches building permit activity by worktype, ordered by total declared investment value, over a rolling 2-year window.
+
+**Dataset ID:** `6ddcd912-32a0-43df-9908-63574f8c7e77`  
+**Filter:** `zip` + `issued_date >= CURRENT_DATE - INTERVAL '2 years'`
+
+**Worktype codes flagged in the prompt:**
+- `ERECT` → new construction
+- `COB` → Certificate of Occupancy (completed projects)
+- `NROCC` → new occupancy permit
+- `CHGOCC` → change of occupancy (conversion pressure)
+- `INTEXT` / `INTREN` / `EXTREN` → renovation of existing stock
+- `INTDEM` → interior demolition (precedes gut renovation)
+- `SOL` / `INSUL` → sustainability investment, owner-occupier signal
+
+---
+
+### Tool 5 — `fetch_entertainment` (Entertainment Licenses)
+
+Fetches entertainment unit type breakdown for the zip code — showing how many venues have each entertainment type and total units.
+
+**Dataset ID:** `1c4c1f7c-9a2a-4f4f-85a7-d3462c6bc9cb`  
+**Filter:** `zip` + `status = 'Active'`
+
+**Interpretation guidance in the prompt:**
+- `Widescreen TV` / `Audio Device` / `Radio` → casual bar and restaurant scene, low noise
+- `Disc Jockey` / `Dancing by Patrons` / `Instrument` / `Vocal` → active nightlife, higher noise
+- `Stage Play` / `Floor Show` / `Karaoke` → arts and performance culture
+- High DJ / Dancing counts → flagged for noise-sensitive buyers
+
+---
+
+### Tool 6 — `fetch_traffic_safety` (Vision Zero Crashes + Fatalities)
+
+Runs three concurrent queries for the specific street:
+- Crash counts by mode type (`mv`, `ped`, `bike`) since 2022
+- Top 5 hotspot intersections by crash frequency since 2022
+- All-time fatality records with mode, intersection, and date
+
+**Crash dataset ID:** `e4bfe397-6bfc-49c5-9367-c879fac7401d`  
+**Fatality dataset ID:** `92f18923-d4ec-4c17-9405-4e0da63e1d6c`  
+**Filter:** `street OR xstreet1 OR xstreet2 = street_name`
+
+**Key signals:**
+- Pedestrian and cyclist crashes → most buyer-relevant, flagged explicitly
+- Named hotspot intersections → cited with crash counts
+- Any fatality → flagged with mode, location, and date
+- Zero fatalities → stated as a meaningful positive
+
+---
+
+### Tool 7 — `fetch_gun_violence` (Shootings + Shots Fired)
+
+Runs two concurrent queries for the BPD district:
+- Shooting victims grouped by `Fatal` / `Non-Fatal` since 2022
+- Total shots fired incidents and ballistics-confirmed count since 2022
+
+**Shootings dataset ID:** `73c7e069-701f-4910-986d-b950f46c91a1`  
+**Shots Fired dataset ID:** `c1e4e6ac-8a84-4b48-8a23-7b2645a32ede`  
+**Filter:** `district` (resolved via `NEIGHBORHOOD_TO_DISTRICT`)
+
+**Key signals:**
+- Total victims with Fatal / Non-Fatal breakdown → cited with exact numbers
+- Fatal shootings → highest severity, flagged explicitly
+- Shots fired total → signals active gun presence even without victims
+- Data is district-level, not street-level → noted for buyer context
+
+---
+
+### Tool 8 — `fetch_green_space` (BPRD Trees + Open Space)
+
+Runs three concurrent queries:
+- Total tree count for the neighborhood via ArcGIS REST API
+- Open space breakdown by type with acreage via CKAN
+- Total usable recreational acres excluding cemeteries via CKAN
+
+**BPRD Trees:** ArcGIS FeatureServer — `BPRD_Trees/FeatureServer/0/query`  
+**Filter:** `neighborhood` (resolved via `NEIGHBORHOOD_TO_BPRD`)
+
+**Open Space dataset ID:** `61c0239f-c8fd-47de-8375-2405382ef37c`  
+**Filter:** `DISTRICT` (uses neighborhood name directly)
+
+**Key signals:**
+- Total tree count → canopy density proxy
+- `Parks, Playgrounds & Athletic Fields` → most buyer-relevant open space type
+- `Urban Wilds` → natural woodland, high value for nature-oriented buyers
+- `Community Gardens` → engaged, sustainability-minded community
+- `Cemeteries & Burying Grounds` → excluded from recreational acre total
+- High tree count + high recreational acres → strong livability signal
 
 ---
 
 ## Summarization Node
 
-After all three fetch nodes complete, `summarize` is called with the full `context` list. It uses `llm_with_structure` (`ChatOpenAI` with `gpt-4o` and `.with_structured_output(NeighborhoodReport)`) to produce a validated four-field response.
+After all eight fetch nodes complete, `summarize` is called with the full `context` list. It uses `llm_with_structure` (`ChatOpenAI` with `gpt-4o` and `.with_structured_output(NeighborhoodReport)`) to produce a validated nine-field response.
 
-The system prompt instructs the LLM to act as a straight-talking buyer-focused analyst — not a reassuring generalist. It is explicitly told to flag red flags, connect dots across the three datasets, and be specific rather than vague.
-
-The structured output schema enforces that the response always contains exactly:
-- `requests_311`
-- `crime_safety`
-- `property_mix`
-- `overall_verdict`
+The system prompt instructs the LLM to act as a straight-talking buyer-focused analyst. It is explicitly told to:
+- Flag red flags plainly without softening
+- Cite specific numbers for every field
+- Connect signals across datasets
+- Never carry data quality caveats into the `overall_verdict`
+- Produce an `overall_verdict` of at least 150 words with a direct buyer-type recommendation
 
 ---
 
@@ -255,7 +263,7 @@ The structured output schema enforces that the response always contains exactly:
 
 ## Valid Neighborhoods
 
-The `fetch_crime` node resolves the BPD district from the neighborhood name. Only the following neighborhood strings are supported (must match exactly as they appear in the 311 dataset):
+The following neighborhood strings are supported. They must match exactly as entered:
 
 ```
 Allston, Allston / Brighton, Back Bay, Beacon Hill, Brighton,
@@ -265,5 +273,3 @@ Hyde Park, Jamaica Plain, Mattapan, Mission Hill, Roslindale,
 Roxbury, South Boston, South Boston / South Boston Waterfront,
 South End, West Roxbury
 ```
-
-If the neighborhood string does not match any key in `NEIGHBORHOOD_TO_DISTRICT`, `fetch_crime` returns a "could not resolve district" message and the crime section of the report will note the data gap.

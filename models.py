@@ -24,4 +24,9 @@ class SearchResponse(BaseModel):
     requests_311:    str | None = None
     crime_safety:    str | None = None
     property_mix:    str | None = None
-    overall_verdict: str | None = None
+    permit_activity:     str | None = None
+    entertainment_scene: str | None = None
+    traffic_safety:      str | None = None
+    gun_violence:        str | None = None
+    green_space:         str | None = None
+    overall_verdict:     str | None = None

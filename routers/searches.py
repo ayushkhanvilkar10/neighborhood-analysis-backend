@@ -45,7 +45,12 @@ async def create_search(search: SearchCreate, current=Depends(get_current_user))
         "requests_311":    analysis["requests_311"],
         "crime_safety":    analysis["crime_safety"],
         "property_mix":    analysis["property_mix"],
-        "overall_verdict": analysis["overall_verdict"],
+        "permit_activity":     analysis["permit_activity"],
+        "entertainment_scene": analysis["entertainment_scene"],
+        "traffic_safety":      analysis["traffic_safety"],
+        "gun_violence":        analysis["gun_violence"],
+        "green_space":         analysis["green_space"],
+        "overall_verdict":     analysis["overall_verdict"],
     }
 
 
