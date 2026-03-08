@@ -26,9 +26,11 @@ async def create_search(search: SearchCreate, current=Depends(get_current_user))
     db = get_authed_client(token)
     # Run the agent first — street_name maps to the street field
     agent_result = await graph.ainvoke({
-        "neighborhood": search.neighborhood,
-        "street_name":  search.street,
-        "zip_code":     search.zip_code,
+        "neighborhood":         search.neighborhood,
+        "street_name":          search.street,
+        "zip_code":             search.zip_code,
+        "household_type":       search.household_type,
+        "property_preferences": search.property_preferences,
     })
 
     analysis_dict = {

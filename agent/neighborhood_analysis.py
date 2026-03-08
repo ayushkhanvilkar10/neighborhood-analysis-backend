@@ -83,9 +83,11 @@ NEIGHBORHOOD_TO_BPRD = {
 
 class State(TypedDict):
     # Inputs
-    neighborhood: str
-    street_name: str
-    zip_code: str
+    neighborhood:         str
+    street_name:          str
+    zip_code:             str
+    household_type:       str | None
+    property_preferences: list[str] | None
     # Parallel fetch nodes all append to this list (operator.add reducer)
     context: Annotated[list[str], operator.add]
 
@@ -638,6 +640,13 @@ sys_msg = SystemMessage(content=(
     "  - Connect to buyer preferences: families with children should have park and playground acreage highlighted. \n"
     "  - High tree count + high recreational acres = strong livability signal. \n"
     "  - Low tree count + minimal open space = neighborhood lacks green infrastructure — flag for buyers who value outdoor access.\n\n"
+    "## Buyer Profile & Property Preference\n"
+    "  - If a buyer profile (household type) is provided, always address the buyer directly by that type in "
+    "both the property_mix and overall_verdict fields.\n"
+    "  - If property preferences are provided, always state in property_mix whether the neighborhood has "
+    "strong or weak inventory for those specific property types — cite the actual count from the data.\n"
+    "  - In overall_verdict, name the buyer type and property preference explicitly — do not give a generic verdict "
+    "when this context is available.\n\n"
     "## Overall Verdict\n"
     "Synthesize across all eight datasets into a comprehensive, substantive verdict of at least 150 words. "
     "Structure it as follows:\n"
@@ -654,10 +663,18 @@ sys_msg = SystemMessage(content=(
 
 async def summarize(state: State) -> dict:
     """Call the LLM with all fetched context and return the nine structured fields."""
+    household = state.get("household_type")
+    prefs     = state.get("property_preferences")
+    buyer_line = f"Buyer profile: {household}\n" if household else ""
+    pref_line  = f"Property preference: {', '.join(prefs)}\n" if prefs else ""
+
     user_msg = HumanMessage(content=(
         f"Neighborhood: {state['neighborhood']}\n"
         f"Street: {state['street_name']}\n"
-        f"Zip Code: {state['zip_code']}\n\n"
+        f"Zip Code: {state['zip_code']}\n"
+        + buyer_line
+        + pref_line
+        + "\n"
         + "\n\n".join(state["context"])
     ))
     report = await llm_with_structure.ainvoke([sys_msg, user_msg])
