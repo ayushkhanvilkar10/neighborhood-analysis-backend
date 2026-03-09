@@ -4,11 +4,15 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, field_validator
 
 
+# ─────────────────────────────────────────────
+# Searches
+# ─────────────────────────────────────────────
+
 class SearchCreate(BaseModel):
-    neighborhood:        str
-    street:              str
-    zip_code:            str
-    household_type:      str | None = None
+    neighborhood:         str
+    street:               str
+    zip_code:             str
+    household_type:       str | None = None
     property_preferences: list[str] | None = None
 
     @field_validator("property_preferences")
@@ -22,11 +26,40 @@ class SearchCreate(BaseModel):
 class SearchResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    id: UUID
-    user_id: UUID
+    id:           UUID
+    user_id:      UUID
     neighborhood: str
-    street: str
-    zip_code: str
-    created_at: datetime
+    street:       str
+    zip_code:     str
+    created_at:   datetime
     # Agent analysis — stored as JSONB, only present on POST, None on GET
-    analysis: dict | None = None
+    analysis:     dict | None = None
+
+
+# ─────────────────────────────────────────────
+# Chat sessions
+# ─────────────────────────────────────────────
+
+class ChatSessionCreate(BaseModel):
+    first_message: str  # Used to create the session title and kick off the first turn
+
+
+class ChatSessionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id:         UUID
+    title:      str
+    created_at: datetime
+
+
+# ─────────────────────────────────────────────
+# Chat messages
+# ─────────────────────────────────────────────
+
+class ChatMessageResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id:         UUID
+    role:       str   # 'human' | 'ai'
+    content:    str
+    created_at: datetime

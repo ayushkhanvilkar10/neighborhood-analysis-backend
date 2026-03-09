@@ -1,6 +1,6 @@
 # Neighborhood Analysis Backend
 
-A FastAPI backend for a Neighborhood Analysis application. Users authenticate via Supabase, submit neighborhood search forms (neighborhood name, street, zip code), and retrieve or delete their saved searches. The backend is designed to eventually trigger a LangGraph AI agent that analyzes Boston neighborhood data using the Boston Open Data API.
+A FastAPI backend for a Neighborhood Analysis application. Users authenticate via Supabase, submit neighborhood search forms, and receive AI-generated neighborhood reports powered by a LangGraph agent. The backend also supports a streaming chat interface where users can have multi-turn conversations with an AI assistant about Boston neighborhoods.
 
 **Live API:** [neighborhood-analysis-backend-production.up.railway.app](https://neighborhood-analysis-backend-production.up.railway.app)
 
@@ -12,6 +12,7 @@ A FastAPI backend for a Neighborhood Analysis application. Users authenticate vi
 | Database & Auth  | Supabase (PostgreSQL + email/password auth)     |
 | Token Validation | JWT via Supabase ECC (P-256) asymmetric keys    |
 | Data Security    | Row Level Security (RLS) enforced at the DB     |
+| AI               | LangGraph + GPT-4o                              |
 | Deployment       | Railway (auto-deploy on push to `main`)         |
 
 ## API Endpoints
@@ -21,7 +22,7 @@ All protected endpoints require an `Authorization: Bearer <jwt_token>` header. T
 | Method   | Path               | Auth       | Description                                      |
 | -------- | ------------------ | ---------- | ------------------------------------------------ |
 | `GET`    | `/health`          | Public     | Health check — returns `{"status": "ok"}`        |
-| `POST`   | `/searches`        | Protected  | Save a neighborhood search for the current user  |
+| `POST`   | `/searches`        | Protected  | Run agent analysis and save search               |
 | `GET`    | `/searches`        | Protected  | Retrieve all saved searches for the current user |
 | `DELETE` | `/searches/{id}`   | Protected  | Delete a saved search by ID (owner only)         |
 
@@ -31,7 +32,9 @@ All protected endpoints require an `Authorization: Bearer <jwt_token>` header. T
 {
   "neighborhood": "Back Bay",
   "street": "Newbury St",
-  "zip_code": "02116"
+  "zip_code": "02116",
+  "household_type": "partner",
+  "property_preferences": ["Condo"]
 }
 ```
 
@@ -45,6 +48,9 @@ neighborhood-analysis-backend/
 ├── models.py             # Pydantic v2 request/response models
 ├── routers/
 │   └── searches.py       # Endpoint handlers, per-request Supabase client
+├── agent/
+│   ├── neighborhood_analysis.py  # Parallel 8-node LangGraph analysis agent
+│   └── chat_agent.py             # Streaming conversational chat agent
 ├── requirements.txt
 ├── Procfile              # Railway start command
 └── .env                  # Local environment variables (gitignored)
@@ -59,7 +65,7 @@ neighborhood-analysis-backend/
 
 ## Row Level Security
 
-Row Level Security ensures that even though all users' data lives in the same table, each user can only read, write, and delete their own rows. The `auth.uid()` function returns the UUID of the currently authenticated user from the JWT token. This is enforced at the **PostgreSQL level**, not just in application code.
+Row Level Security ensures that even though all users' data lives in the same tables, each user can only read, write, and delete their own rows. The `auth.uid()` function returns the UUID of the currently authenticated user from the JWT token. This is enforced at the **PostgreSQL level**, not just in application code. All three tables — `saved_searches`, `chat_sessions`, and `chat_messages` — have RLS enabled with identical per-user policies.
 
 ## Local Setup
 
@@ -85,6 +91,7 @@ Create a `.env` file in the project root:
 ```
 SUPABASE_URL=your_supabase_project_url
 SUPABASE_ANON_KEY=your_supabase_anon_key
+OPENAI_API_KEY=your_openai_api_key
 ```
 
 ### 4. Run the server
@@ -97,22 +104,25 @@ Visit [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) for the interacti
 
 ## Supabase Database Setup
 
-Run the following SQL blocks in the **Supabase SQL Editor** in order.
+The app uses three tables. Run all SQL blocks below in the **Supabase SQL Editor** in order.
 
-### Step 1 — Create the `saved_searches` table
+---
+
+### Table 1 — `saved_searches`
+
+Stores neighborhood search submissions and the AI-generated analysis report for each one.
 
 ```sql
 CREATE TABLE saved_searches (
-  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  id           UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id      UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
   neighborhood TEXT NOT NULL,
-  street TEXT NOT NULL,
-  zip_code TEXT NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT now()
+  street       TEXT NOT NULL,
+  zip_code     TEXT NOT NULL,
+  analysis     JSONB,
+  created_at   TIMESTAMPTZ DEFAULT now()
 );
 ```
-
-### Step 2 — Enable RLS and add INSERT / SELECT policies
 
 ```sql
 ALTER TABLE saved_searches ENABLE ROW LEVEL SECURITY;
@@ -124,26 +134,80 @@ CREATE POLICY "Users can insert their own searches"
 CREATE POLICY "Users can view their own searches"
   ON saved_searches FOR SELECT
   USING (auth.uid() = user_id);
-```
 
-### Step 3 — Add DELETE policy
-
-```sql
 CREATE POLICY "Users can delete their own searches"
   ON saved_searches FOR DELETE
   USING (auth.uid() = user_id);
 ```
 
+---
+
+### Table 2 — `chat_sessions`
+
+Each row represents one conversation thread. The `title` is set to the user's first message (truncated). Users can have multiple sessions and revisit old ones.
+
+```sql
+CREATE TABLE chat_sessions (
+  id         UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id    UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  title      TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+```
+
+```sql
+ALTER TABLE chat_sessions ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can insert their own sessions"
+  ON chat_sessions FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can view their own sessions"
+  ON chat_sessions FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete their own sessions"
+  ON chat_sessions FOR DELETE
+  USING (auth.uid() = user_id);
+```
+
+---
+
+### Table 3 — `chat_messages`
+
+Stores individual messages within a chat session. One row per message. The `role` field distinguishes user input from AI responses. Deleting a session automatically cascades and removes all its messages.
+
+```sql
+CREATE TABLE chat_messages (
+  id         UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  session_id UUID REFERENCES chat_sessions(id) ON DELETE CASCADE NOT NULL,
+  user_id    UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+  role       TEXT NOT NULL CHECK (role IN ('human', 'ai')),
+  content    TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT now()
+);
+```
+
+```sql
+ALTER TABLE chat_messages ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can insert their own messages"
+  ON chat_messages FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can view their own messages"
+  ON chat_messages FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete their own messages"
+  ON chat_messages FOR DELETE
+  USING (auth.uid() = user_id);
+```
+
+---
+
 ## Deployment
 
 - Deployed on **Railway** via GitHub integration.
 - Auto-deploys on every push to the `main` branch.
-- Environment variables (`SUPABASE_URL`, `SUPABASE_ANON_KEY`) are set in Railway's service variables and are never committed to the repo.
-
-## Roadmap
-
-- Integrate a **LangGraph AI agent** triggered on neighborhood search submission
-- Agent analyzes Boston Open Data (311 requests, crime data, property assessments)
-- **Next.js or Vite frontend** with Supabase auth UI and search form
-- Streaming agent responses to the frontend
-- Chat interface for conversational follow-up on neighborhood reports
+- Environment variables (`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `OPENAI_API_KEY`) are set in Railway's service variables and are never committed to the repo.
