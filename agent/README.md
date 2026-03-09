@@ -1,6 +1,6 @@
 # Neighborhood Analysis Agent
 
-A LangGraph-powered agent that analyzes Boston neighborhoods by making eight parallel calls to the Boston Open Data API and the ArcGIS REST API, then synthesizing the results into a structured report using GPT-4o.
+A LangGraph-powered agent that analyzes Boston neighborhoods by making eight parallel calls to the Boston Open Data API and the ArcGIS REST API, then synthesizing the results into a structured report using GPT-4o. Supports optional buyer personalization via household type and property preferences.
 
 ---
 
@@ -18,7 +18,7 @@ START
   └── fetch_green_space     ─┘
 ```
 
-All eight fetch nodes run in parallel using LangGraph's fan-out/fan-in pattern. Each node writes its result to a shared `context` list in state using an `operator.add` reducer. Once all eight finish, LangGraph fans back in to the `summarize` node, which passes the full context to GPT-4o and returns a structured nine-field report.
+All eight fetch nodes run in parallel using LangGraph's fan-out/fan-in pattern. Each node writes its result to a shared `context` list in state using an `operator.add` reducer. Once all eight finish, LangGraph fans back in to the `summarize` node, which passes the full context to GPT-4o and returns a validated nine-field report.
 
 ---
 
@@ -26,10 +26,12 @@ All eight fetch nodes run in parallel using LangGraph's fan-out/fan-in pattern. 
 
 ```python
 class State(TypedDict):
-    neighborhood: str   # e.g. "Jamaica Plain"
-    street_name:  str   # e.g. "CREIGHTON ST" (uppercase, as it appears in BPD dataset)
-    zip_code:     str   # e.g. "02130"
-    context:      Annotated[list[str], operator.add]  # populated by the eight fetch nodes
+    neighborhood:         str         # e.g. "Jamaica Plain"
+    street_name:          str         # e.g. "CREIGHTON ST" (uppercase, as in BPD dataset)
+    zip_code:             str         # e.g. "02130"
+    household_type:       str | None  # e.g. "partner", "family", "single" — optional
+    property_preferences: list[str] | None  # e.g. ["Condo"] — max 2, optional
+    context: Annotated[list[str], operator.add]  # populated by the eight fetch nodes
 ```
 
 **Output:**
@@ -49,9 +51,39 @@ class OutputState(TypedDict):
 
 ---
 
+## Buyer Personalization
+
+When `household_type` and/or `property_preferences` are provided, the `summarize` node injects them into the human message sent to GPT-4o:
+
+```
+Buyer profile: partner
+Property preference: Condo
+```
+
+The system prompt then instructs the LLM to:
+- Address the buyer directly by household type in both `property_mix` and `overall_verdict`
+- State explicitly whether the neighborhood has strong or weak inventory for the preferred property types, citing actual counts from the data
+- Never produce a generic verdict when buyer context is available
+
+**Supported `household_type` values:**
+
+| Value | Label |
+|---|---|
+| `single` | Living solo |
+| `partner` | Couple / Partner |
+| `family` | Family with kids |
+| `retiree` | Retiree / Empty nester |
+| `investor` | Investor |
+
+**Supported `property_preferences` values** (max 2):
+
+`Condo`, `Single Family`, `Multi-Family`, `Townhouse`, `New Construction`, `Fixer-Upper`
+
+---
+
 ## Neighborhood Mappings
 
-Two lookup dictionaries are defined at the top of `neighborhood_analysis.py`. Both use the same 21 canonical neighborhood keys — the strings users enter into the form.
+Two lookup dictionaries are defined at the top of `neighborhood_analysis.py`. Both use the same 21 canonical neighborhood keys.
 
 ### `NEIGHBORHOOD_TO_DISTRICT`
 Maps neighborhood names to BPD district codes. Used by `fetch_crime` and `fetch_gun_violence`.
@@ -96,13 +128,15 @@ The BPRD Trees source is queried via the ArcGIS REST API:
 https://services.arcgis.com/sFnw0xNflSi8J0uh/arcgis/rest/services/BPRD_Trees/FeatureServer/0/query
 ```
 
+All HTTP calls are made asynchronously using `httpx.AsyncClient` with a 15-second timeout.
+
 ---
 
 ### Tool 1 — `fetch_311` (311 Service Requests)
 
 Fetches the top 15 most frequent 311 complaint types for the neighborhood.
 
-**Dataset ID:** `1a0b420d-99f1-4887-9851-990b2a5a6e17`  
+**Dataset ID:** `1a0b420d-99f1-4887-9851-990b2a5a6e17`
 **Filter:** `neighborhood`
 
 **Signal types flagged in the prompt:**
@@ -118,7 +152,7 @@ Fetches the top 15 most frequent 311 complaint types for the neighborhood.
 
 Fetches the top 15 most frequent crime types on the specific street in the current year.
 
-**Dataset ID:** `b973d8cb-eeb2-4e7e-99da-c92938efc9c0`  
+**Dataset ID:** `b973d8cb-eeb2-4e7e-99da-c92938efc9c0`
 **Filter:** `DISTRICT` (resolved via `NEIGHBORHOOD_TO_DISTRICT`) + `STREET` + `YEAR = '2026'`
 
 **Signal types flagged in the prompt:**
@@ -133,7 +167,7 @@ Fetches the top 15 most frequent crime types on the specific street in the curre
 
 Fetches the top 15 most frequent property use types in the zip code.
 
-**Dataset ID:** `ee73430d-96c0-423e-ad21-c4cfb54c8961`  
+**Dataset ID:** `ee73430d-96c0-423e-ad21-c4cfb54c8961`
 **Filter:** `ZIP_CODE`
 
 **Signal types flagged in the prompt:**
@@ -149,7 +183,7 @@ Fetches the top 15 most frequent property use types in the zip code.
 
 Fetches building permit activity by worktype, ordered by total declared investment value, over a rolling 2-year window.
 
-**Dataset ID:** `6ddcd912-32a0-43df-9908-63574f8c7e77`  
+**Dataset ID:** `6ddcd912-32a0-43df-9908-63574f8c7e77`
 **Filter:** `zip` + `issued_date >= CURRENT_DATE - INTERVAL '2 years'`
 
 **Worktype codes flagged in the prompt:**
@@ -167,7 +201,7 @@ Fetches building permit activity by worktype, ordered by total declared investme
 
 Fetches entertainment unit type breakdown for the zip code — showing how many venues have each entertainment type and total units.
 
-**Dataset ID:** `1c4c1f7c-9a2a-4f4f-85a7-d3462c6bc9cb`  
+**Dataset ID:** `1c4c1f7c-9a2a-4f4f-85a7-d3462c6bc9cb`
 **Filter:** `zip` + `status = 'Active'`
 
 **Interpretation guidance in the prompt:**
@@ -185,8 +219,8 @@ Runs three concurrent queries for the specific street:
 - Top 5 hotspot intersections by crash frequency since 2022
 - All-time fatality records with mode, intersection, and date
 
-**Crash dataset ID:** `e4bfe397-6bfc-49c5-9367-c879fac7401d`  
-**Fatality dataset ID:** `92f18923-d4ec-4c17-9405-4e0da63e1d6c`  
+**Crash dataset ID:** `e4bfe397-6bfc-49c5-9367-c879fac7401d`
+**Fatality dataset ID:** `92f18923-d4ec-4c17-9405-4e0da63e1d6c`
 **Filter:** `street OR xstreet1 OR xstreet2 = street_name`
 
 **Key signals:**
@@ -203,8 +237,8 @@ Runs two concurrent queries for the BPD district:
 - Shooting victims grouped by `Fatal` / `Non-Fatal` since 2022
 - Total shots fired incidents and ballistics-confirmed count since 2022
 
-**Shootings dataset ID:** `73c7e069-701f-4910-986d-b950f46c91a1`  
-**Shots Fired dataset ID:** `c1e4e6ac-8a84-4b48-8a23-7b2645a32ede`  
+**Shootings dataset ID:** `73c7e069-701f-4910-986d-b950f46c91a1`
+**Shots Fired dataset ID:** `c1e4e6ac-8a84-4b48-8a23-7b2645a32ede`
 **Filter:** `district` (resolved via `NEIGHBORHOOD_TO_DISTRICT`)
 
 **Key signals:**
@@ -222,10 +256,10 @@ Runs three concurrent queries:
 - Open space breakdown by type with acreage via CKAN
 - Total usable recreational acres excluding cemeteries via CKAN
 
-**BPRD Trees:** ArcGIS FeatureServer — `BPRD_Trees/FeatureServer/0/query`  
+**BPRD Trees:** ArcGIS FeatureServer — `BPRD_Trees/FeatureServer/0/query`
 **Filter:** `neighborhood` (resolved via `NEIGHBORHOOD_TO_BPRD`)
 
-**Open Space dataset ID:** `61c0239f-c8fd-47de-8375-2405382ef37c`  
+**Open Space dataset ID:** `61c0239f-c8fd-47de-8375-2405382ef37c`
 **Filter:** `DISTRICT` (uses neighborhood name directly)
 
 **Key signals:**
@@ -246,6 +280,7 @@ The system prompt instructs the LLM to act as a straight-talking buyer-focused a
 - Flag red flags plainly without softening
 - Cite specific numbers for every field
 - Connect signals across datasets
+- Address the buyer by household type and evaluate inventory for preferred property types when that context is provided
 - Never carry data quality caveats into the `overall_verdict`
 - Produce an `overall_verdict` of at least 150 words with a direct buyer-type recommendation
 
