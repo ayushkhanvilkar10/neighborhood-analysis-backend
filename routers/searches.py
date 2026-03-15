@@ -43,6 +43,7 @@ async def create_search(search: SearchCreate, current=Depends(get_current_user))
         "gun_violence":        agent_result["gun_violence"],
         "green_space":         agent_result["green_space"],
         "overall_verdict":     agent_result["overall_verdict"],
+        "raw_stats":           agent_result.get("raw_stats", []),
     }
 
     # Insert row with analysis already populated

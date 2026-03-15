@@ -81,6 +81,34 @@ NEIGHBORHOOD_TO_BPRD = {
 # 2. State schemas
 # ─────────────────────────────────────────────
 
+NOISE_OFFENSES = {
+    "INVESTIGATE PROPERTY",
+    "INVESTIGATE PERSON",
+    "SICK ASSIST",
+    "TOWED MOTOR VEHICLE",
+}
+
+NOISE_311_TYPES = {
+    "Request for Snow Plowing",
+    "Unshoveled Sidewalk",
+    "Traffic Signal Inspection",
+    "Sign Repair",
+    "Recycling Cart Return",
+    "Pick up Dead Animal",
+}
+
+# Maps frontend property preference labels → Boston assessment LU_DESC values
+# Used in summarize to translate user selections into dataset terms for the LLM
+PROPERTY_PREF_TO_LU_DESC: dict[str, list[str]] = {
+    "Condo":              ["RESIDENTIAL CONDO"],
+    "Single Family":      ["SINGLE FAM DWELLING"],
+    "Two / Three Family": ["TWO-FAM DWELLING", "THREE-FAM DWELLING"],
+    "Small Apartment":    ["APT 4-6 UNITS"],
+    "Mid-Size Apartment": ["APT 7-30 UNITS"],
+    "Mixed Use":          ["RES /COMMERCIAL USE", "COMM MULTI-USE"],
+}
+
+
 class State(TypedDict):
     # Inputs
     neighborhood:         str
@@ -89,7 +117,9 @@ class State(TypedDict):
     household_type:       str | None
     property_preferences: list[str] | None
     # Parallel fetch nodes all append to this list (operator.add reducer)
-    context: Annotated[list[str], operator.add]
+    context:   Annotated[list[str],  operator.add]
+    # Structured stats from fetch nodes — for UI display, not passed to LLM
+    raw_stats: Annotated[list[dict], operator.add]
 
 
 class OutputState(TypedDict):
@@ -102,6 +132,7 @@ class OutputState(TypedDict):
     gun_violence:        str
     green_space:         str
     overall_verdict:     str
+    raw_stats:           list[dict]
 
 
 class NeighborhoodReport(TypedDict):
@@ -147,10 +178,24 @@ async def fetch_311(state: State) -> dict:
             records = resp.json().get("result", {}).get("records", [])
         if not records:
             return {"context": [f"No 311 records found for neighborhood: {neighborhood}"]}
+
+        # ── context string for LLM — unchanged ──────────────────────────────
         lines = [f"Top 311 requests for {neighborhood}:\n"]
         for r in records:
             lines.append(f"  • {r['type']}: {r['count']}")
-        return {"context": ["\n".join(lines)]}
+
+        # ── filtered stats for UI — same records, no extra API call ─────────
+        meaningful = [
+            {"type": r["type"], "count": int(r["count"])}
+            for r in records
+            if r["type"] not in NOISE_311_TYPES
+        ]
+        total = sum(item["count"] for item in meaningful)
+
+        return {
+            "context":   ["\n".join(lines)],
+            "raw_stats": [{"section": "requests_311", "data": meaningful, "total": total}],
+        }
     except httpx.HTTPError as e:
         return {"context": [f"Error fetching 311 data: {e}"]}
 
@@ -177,10 +222,23 @@ async def fetch_crime(state: State) -> dict:
             records = resp.json().get("result", {}).get("records", [])
         if not records:
             return {"context": [f"No crime records found for street: {street_name} in district {district} ({neighborhood})"]}
+
+        # ── context string for LLM — unchanged ──────────────────────────────
         lines = [f"Top crimes on {street_name} (District {district} – {neighborhood}, 2026):\n"]
         for r in records:
             lines.append(f"  • {r['OFFENSE_DESCRIPTION']}: {r['count']}")
-        return {"context": ["\n".join(lines)]}
+
+        # ── filtered top 6 for UI — same records, no extra API call ───────
+        filtered = [
+            {"offense": r["OFFENSE_DESCRIPTION"], "count": int(r["count"])}
+            for r in records
+            if r["OFFENSE_DESCRIPTION"] not in NOISE_OFFENSES
+        ][:6]
+
+        return {
+            "context":   ["\n".join(lines)],
+            "raw_stats": [{"section": "crime_safety", "data": filtered}],
+        }
     except httpx.HTTPError as e:
         return {"context": [f"Error fetching crime data: {e}"]}
 
@@ -201,10 +259,25 @@ async def fetch_property(state: State) -> dict:
             records = resp.json().get("result", {}).get("records", [])
         if not records:
             return {"context": [f"No property records found for zip code: {zip_code}"]}
+
+        # ── context string for LLM — unchanged ──────────────────────────────
         lines = [f"Property mix for zip code {zip_code}:\n"]
         for r in records:
             lines.append(f"  • {r['LU_DESC']}: {r['count']}")
-        return {"context": ["\n".join(lines)]}
+
+        # ── property counts by category for UI — same records, no extra API call ──
+        lu_lookup = {r["LU_DESC"]: int(r["count"]) for r in records}
+        property_counts = {
+            label: sum(lu_lookup.get(lu, 0) for lu in lu_values)
+            for label, lu_values in PROPERTY_PREF_TO_LU_DESC.items()
+            if sum(lu_lookup.get(lu, 0) for lu in lu_values) > 0
+        }
+
+        total = sum(property_counts.values())
+        return {
+            "context":   ["\n".join(lines)],
+            "raw_stats": [{"section": "property_mix", "data": property_counts, "total": total}],
+        }
     except httpx.HTTPError as e:
         return {"context": [f"Error fetching property data: {e}"]}
 
@@ -666,7 +739,20 @@ async def summarize(state: State) -> dict:
     household = state.get("household_type")
     prefs     = state.get("property_preferences")
     buyer_line = f"Buyer profile: {household}\n" if household else ""
-    pref_line  = f"Property preference: {', '.join(prefs)}\n" if prefs else ""
+
+    # Translate frontend labels to dataset LU_DESC terms so the LLM
+    # sees the exact property type strings present in the context block
+    if prefs:
+        translated = []
+        for p in prefs:
+            lu_values = PROPERTY_PREF_TO_LU_DESC.get(p)
+            if lu_values:
+                translated.append(f"{p} ({', '.join(lu_values)})")
+            else:
+                translated.append(p)
+        pref_line = f"Property preference: {', '.join(translated)}\n"
+    else:
+        pref_line = ""
 
     user_msg = HumanMessage(content=(
         f"Neighborhood: {state['neighborhood']}\n"
