@@ -211,3 +211,24 @@ CREATE POLICY "Users can delete their own messages"
 - Deployed on **Railway** via GitHub integration.
 - Auto-deploys on every push to the `main` branch.
 - Environment variables (`SUPABASE_URL`, `SUPABASE_ANON_KEY`, `OPENAI_API_KEY`) are set in Railway's service variables and are never committed to the repo.
+
+---
+
+## Roadmap
+
+### UI
+- **Update Login / Sign-Up UI** with this component: https://21st.dev/community/components/easemize/sign-in/default
+
+### Agent & State
+- **Enrich state with parallel and intersecting streets** — explore whether the state passed to the agent can be expanded so that alongside the user-submitted street name, streets that are parallel and intersecting with it are automatically added. This would allow the agent to build a more complete picture of the immediate area rather than a single corridor.
+- **Figure out if an API exists to turn street names into coordinates** — a geocoding API (e.g. Mapbox Geocoding, Google Maps Geocoding, or Boston's own SAM address dataset) could convert a street name + neighborhood into lat/long bounds. This is a prerequisite for the map visualization work and for the expanded street state.
+- **Adding more streets will allow a more complete crime picture** — once parallel and intersecting streets are included in the state, the crime and traffic safety tools can query across all of them. The resulting data could either align with or contrast against the broader neighborhood-level picture, giving the buyer a much richer signal.
+
+### Data & Database
+- **Add a Supabase table for neighborhood-level georeferenced records** — create a table for dumping 311 request and crime records that include coordinates (lat/long). This table would be populated at analysis time and queried by the map visualization layer rather than storing large coordinate arrays in the `analysis` JSONB field of `saved_searches`.
+
+### Scoring
+- **Add a rating to each section** — each of the 8 analysis sections (311, crime, property mix, permits, entertainment, traffic safety, gun violence, green space) could be assigned a score indicating how the neighborhood stacks up for that category relative to Boston as a whole. This could be achieved programmatically using the raw data counts and thresholds, without requiring additional LLM calls.
+
+### Prompting
+- **Further prompt improvements** — more signal can be extracted from the data the LLMs are trained on. GPT-4o has knowledge of Boston's neighborhoods up to its training cutoff and can be prompted more effectively to blend live data with that background knowledge to produce richer, more contextual analysis across all eight sections.
