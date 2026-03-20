@@ -218,17 +218,22 @@ CREATE POLICY "Users can delete their own messages"
 
 ### UI
 - **Update Login / Sign-Up UI** with this component: https://21st.dev/community/components/easemize/sign-in/default
+- **Add login page UI component** from the following bookmarked collection: https://21st.dev/community/bookmarks/components
+- **Simplify the neighborhood analyzer search form** — once user preferences are persisted in the database (see Data & Database below), the search form should only require neighborhood, street, and zip code. Household type and property preferences should be read from the user's saved profile automatically.
 
 ### Agent & State
+- **Integrate a Blue Bikes tool** — add a ninth parallel fetch node that queries the Blue Bikes dataset for station locations and dock availability in the neighborhood. This adds a transit and mobility signal to the analysis, relevant to buyers who commute by bike or value car-free infrastructure.
 - **Enrich state with parallel and intersecting streets** — explore whether the state passed to the agent can be expanded so that alongside the user-submitted street name, streets that are parallel and intersecting with it are automatically added. This would allow the agent to build a more complete picture of the immediate area rather than a single corridor.
 - **Figure out if an API exists to turn street names into coordinates** — a geocoding API (e.g. Mapbox Geocoding, Google Maps Geocoding, or Boston's own SAM address dataset) could convert a street name + neighborhood into lat/long bounds. This is a prerequisite for the map visualization work and for the expanded street state.
 - **Adding more streets will allow a more complete crime picture** — once parallel and intersecting streets are included in the state, the crime and traffic safety tools can query across all of them. The resulting data could either align with or contrast against the broader neighborhood-level picture, giving the buyer a much richer signal.
 
 ### Data & Database
+- **Add a `user_preferences` Supabase table** — persist household type and property preferences per user so they do not need to be re-entered on every search. The table should be keyed by `user_id` with RLS enforced. At analysis time, the backend reads from this table and injects the preferences into the agent prompt automatically.
 - **Add a Supabase table for neighborhood-level georeferenced records** — create a table for dumping 311 request and crime records that include coordinates (lat/long). This table would be populated at analysis time and queried by the map visualization layer rather than storing large coordinate arrays in the `analysis` JSONB field of `saved_searches`.
 
 ### Scoring
 - **Add a rating to each section** — each of the 8 analysis sections (311, crime, property mix, permits, entertainment, traffic safety, gun violence, green space) could be assigned a score indicating how the neighborhood stacks up for that category relative to Boston as a whole. This could be achieved programmatically using the raw data counts and thresholds, without requiring additional LLM calls.
 
 ### Prompting
+- **Inject persisted user preferences into the agent prompt** — at analysis time, fetch the user's saved household type and property preferences from the `user_preferences` table and pass them to the summarization node. This removes the need for the frontend form to collect them on every search and ensures the agent always has buyer context.
 - **Further prompt improvements** — more signal can be extracted from the data the LLMs are trained on. GPT-4o has knowledge of Boston's neighborhoods up to its training cutoff and can be prompted more effectively to blend live data with that background knowledge to produce richer, more contextual analysis across all eight sections.
