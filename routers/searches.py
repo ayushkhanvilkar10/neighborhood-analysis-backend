@@ -1,10 +1,17 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+import json
 import os
+from pathlib import Path
 from supabase import create_client
 
 from auth import get_current_user
 from models import SearchCreate, SearchResponse
 from agent.neighborhood_analysis import graph
+
+# Load neighborhood tiers once at startup
+_tiers_path = Path(__file__).resolve().parent.parent / "agent" / "neighborhood_tiers.json"
+with open(_tiers_path) as _f:
+    NEIGHBORHOOD_TIERS = json.load(_f)
 
 router = APIRouter()
 
@@ -44,6 +51,7 @@ async def create_search(search: SearchCreate, current=Depends(get_current_user))
         "green_space":         agent_result["green_space"],
         "overall_verdict":     agent_result["overall_verdict"],
         "raw_stats":           agent_result.get("raw_stats", []),
+        "neighborhood_tiers":  NEIGHBORHOOD_TIERS.get(search.neighborhood),
     }
 
     # Insert row with analysis already populated

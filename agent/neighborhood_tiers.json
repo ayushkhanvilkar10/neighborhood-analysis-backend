@@ -1,0 +1,23 @@
+{
+  "Allston":                                        { "crime": "Moderate", "complaints_311": "High"     },
+  "Allston / Brighton":                             { "crime": "Moderate", "complaints_311": "High"     },
+  "Back Bay":                                       { "crime": "Low",      "complaints_311": "High"     },
+  "Beacon Hill":                                    { "crime": "Low",      "complaints_311": "High"     },
+  "Brighton":                                       { "crime": "Moderate", "complaints_311": "High"     },
+  "Charlestown":                                    { "crime": "Low",      "complaints_311": "Low"      },
+  "Dorchester":                                     { "crime": "High",     "complaints_311": "High"     },
+  "Downtown / Financial District":                  { "crime": "High",     "complaints_311": "High"     },
+  "East Boston":                                    { "crime": "High",     "complaints_311": "Moderate" },
+  "Fenway / Kenmore / Audubon Circle / Longwood":   { "crime": "Moderate", "complaints_311": "Moderate" },
+  "Greater Mattapan":                               { "crime": "High",     "complaints_311": "Moderate" },
+  "Hyde Park":                                      { "crime": "Low",      "complaints_311": "Low"      },
+  "Jamaica Plain":                                  { "crime": "Moderate", "complaints_311": "Moderate" },
+  "Mattapan":                                       { "crime": "High",     "complaints_311": "Moderate" },
+  "Mission Hill":                                   { "crime": "High",     "complaints_311": "Low"      },
+  "Roslindale":                                     { "crime": "Low",      "complaints_311": "Low"      },
+  "Roxbury":                                        { "crime": "High",     "complaints_311": "High"     },
+  "South Boston":                                   { "crime": "Low",      "complaints_311": "Moderate" },
+  "South Boston / South Boston Waterfront":         { "crime": "Low",      "complaints_311": "Moderate" },
+  "South End":                                      { "crime": "Moderate", "complaints_311": "High"     },
+  "West Roxbury":                                   { "crime": "Low",      "complaints_311": "Low"      }
+}
