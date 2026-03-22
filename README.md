@@ -31,35 +31,77 @@ All protected endpoints require an `Authorization: Bearer <jwt_token>` header. T
 ```json
 {
   "neighborhood": "Back Bay",
-  "street": "Newbury St",
+  "street": "NEWBURY ST",
   "zip_code": "02116",
   "household_type": "partner",
   "property_preferences": ["Condo"]
 }
 ```
 
+**POST /searches response — `analysis` object:**
+
+The `analysis` field in the response (and in saved searches returned by `GET /searches`) contains:
+
+```json
+{
+  "requests_311":        "string — LLM analysis of 311 complaint patterns",
+  "crime_safety":        "string — LLM analysis of crime incidents on the street",
+  "property_mix":        "string — LLM analysis of property types in the zip code",
+  "permit_activity":     "string — LLM analysis of building permit investment",
+  "entertainment_scene": "string — LLM analysis of entertainment license types",
+  "traffic_safety":      "string — LLM analysis of crashes and fatalities",
+  "gun_violence":        "string — LLM analysis of shootings and shots fired",
+  "green_space":         "string — LLM analysis of trees and open space",
+  "overall_verdict":     "string — synthesized buyer-focused verdict (250+ words)",
+  "raw_stats": [
+    { "section": "crime_safety",  "data": [{ "offense": "...", "count": 0 }] },
+    { "section": "property_mix",  "data": { "Condo": 0 }, "total": 0 },
+    { "section": "requests_311",  "data": [{ "type": "...", "count": 0 }], "total": 0 }
+  ],
+  "neighborhood_tiers": {
+    "crime":          "High | Moderate | Low",
+    "complaints_311": "High | Moderate | Low"
+  }
+}
+```
+
+`raw_stats` is populated by the parallel fetch nodes at analysis time — no extra LLM calls required. `neighborhood_tiers` is a static lookup from `agent/neighborhood_tiers.json` injected at the router level before saving to Supabase.
+
 ## Project Structure
 
 ```
 neighborhood-analysis-backend/
-├── main.py               # FastAPI app, CORS middleware, router registration
-├── auth.py               # JWT verification dependency using Supabase get_user()
-├── database.py           # Supabase client initialization
-├── models.py             # Pydantic v2 request/response models
+├── main.py                          # FastAPI app, CORS middleware, router registration
+├── auth.py                          # JWT verification dependency using Supabase get_user()
+├── database.py                      # Supabase client initialization
+├── models.py                        # Pydantic v2 request/response models
 ├── routers/
-│   └── searches.py       # Endpoint handlers, per-request Supabase client
+│   └── searches.py                  # Endpoint handlers — loads neighborhood_tiers.json at startup
 ├── agent/
-│   ├── neighborhood_analysis.py  # Parallel 8-node LangGraph analysis agent
-│   └── chat_agent.py             # Streaming conversational chat agent
+│   ├── neighborhood_analysis.py     # Parallel 8-node LangGraph analysis agent
+│   ├── chat_agent.py                # Streaming ReAct chat agent (7 tools)
+│   └── neighborhood_tiers.json      # Static crime + 311 tier lookup for all 21 neighborhoods
+├── Neighborhood_Rankings.md         # Three neighborhood rankings with methodology and SQL queries
 ├── requirements.txt
-├── Procfile              # Railway start command
-└── .env                  # Local environment variables (gitignored)
+├── Procfile                         # Railway start command
+└── .env                             # Local environment variables (gitignored)
 ```
+
+## Neighborhood Tiers
+
+`agent/neighborhood_tiers.json` maps all 21 canonical neighborhood values to pre-computed tier scores across two dimensions:
+
+- **`crime`** — based on knowledge-adjusted BPD crime data (Aggravated Assault, Threats, Robbery, Drugs, Residential Burglary)
+- **`complaints_311`** — based on 2026 YTD Boston 311 data filtered to high-severity complaint types (CE Collection, Needle Pickup, Encampments, Heat complaints, Unsatisfactory Living Conditions)
+
+Tiers: `"High"`, `"Moderate"`, `"Low"`. These are loaded once at server startup in `routers/searches.py` and injected into `analysis_dict` before saving to Supabase, making them available on both `POST /searches` (new analysis) and `GET /searches` (saved searches).
+
+The full ranking methodology, SQL queries used, and tier tables are documented in `Neighborhood_Rankings.md`.
 
 ## Authentication
 
 - Supabase issues JWT tokens signed with **ECC (P-256) asymmetric keys**.
-- The backend verifies tokens by calling `supabase.auth.get_user(token)` on every protected request — this validates the token server-side.
+- The backend verifies tokens by calling `supabase.auth.get_user(token)` on every protected request.
 - The backend **never trusts `user_id` from the request body** — it always derives it from the verified JWT token.
 - A fresh Supabase client is created per request with the user's token to avoid global state mutation in concurrent environments.
 
@@ -110,7 +152,7 @@ The app uses three tables. Run all SQL blocks below in the **Supabase SQL Editor
 
 ### Table 1 — `saved_searches`
 
-Stores neighborhood search submissions and the AI-generated analysis report for each one.
+Stores neighborhood search submissions and the AI-generated analysis report for each one. The `analysis` JSONB column stores the full 9-field LLM report, `raw_stats`, and `neighborhood_tiers`.
 
 ```sql
 CREATE TABLE saved_searches (
@@ -144,7 +186,7 @@ CREATE POLICY "Users can delete their own searches"
 
 ### Table 2 — `chat_sessions`
 
-Each row represents one conversation thread. The `title` is set to the user's first message (truncated). Users can have multiple sessions and revisit old ones.
+Each row represents one conversation thread. The `title` is set to the user's first message (truncated). Users can have multiple sessions and revisit old ones from the sidebar navigation.
 
 ```sql
 CREATE TABLE chat_sessions (
@@ -217,7 +259,6 @@ CREATE POLICY "Users can delete their own messages"
 ## Roadmap
 
 ### UI
-- **Update Login / Sign-Up UI** with this component: https://21st.dev/community/components/easemize/sign-in/default
 - **Add login page UI component** from the following bookmarked collection: https://21st.dev/community/bookmarks/components
 - **Simplify the neighborhood analyzer search form** — once user preferences are persisted in the database (see Data & Database below), the search form should only require neighborhood, street, and zip code. Household type and property preferences should be read from the user's saved profile automatically.
 
@@ -225,14 +266,15 @@ CREATE POLICY "Users can delete their own messages"
 - **Integrate a Blue Bikes tool** — add a ninth parallel fetch node that queries the Blue Bikes dataset for station locations and dock availability in the neighborhood. This adds a transit and mobility signal to the analysis, relevant to buyers who commute by bike or value car-free infrastructure.
 - **Enrich state with parallel and intersecting streets** — explore whether the state passed to the agent can be expanded so that alongside the user-submitted street name, streets that are parallel and intersecting with it are automatically added. This would allow the agent to build a more complete picture of the immediate area rather than a single corridor.
 - **Figure out if an API exists to turn street names into coordinates** — a geocoding API (e.g. Mapbox Geocoding, Google Maps Geocoding, or Boston's own SAM address dataset) could convert a street name + neighborhood into lat/long bounds. This is a prerequisite for the map visualization work and for the expanded street state.
-- **Adding more streets will allow a more complete crime picture** — once parallel and intersecting streets are included in the state, the crime and traffic safety tools can query across all of them. The resulting data could either align with or contrast against the broader neighborhood-level picture, giving the buyer a much richer signal.
+- **Adding more streets will allow a more complete crime picture** — once parallel and intersecting streets are included in the state, the crime and traffic safety tools can query across all of them, giving the buyer a much richer signal.
 
 ### Data & Database
 - **Add a `user_preferences` Supabase table** — persist household type and property preferences per user so they do not need to be re-entered on every search. The table should be keyed by `user_id` with RLS enforced. At analysis time, the backend reads from this table and injects the preferences into the agent prompt automatically.
 - **Add a Supabase table for neighborhood-level georeferenced records** — create a table for dumping 311 request and crime records that include coordinates (lat/long). This table would be populated at analysis time and queried by the map visualization layer rather than storing large coordinate arrays in the `analysis` JSONB field of `saved_searches`.
+- **Automate neighborhood tier computation via an agentic pipeline** — the current `neighborhood_tiers.json` is a static file. Long-term, a LangGraph pipeline on a Railway cron job (weekly) should query the Boston Open Data endpoints, apply the consolidation and correction logic documented in `Neighborhood_Rankings.md`, and upsert results into a `neighborhood_tiers` Supabase table. The LLM correction node handles the knowledge-based reranking (e.g. district boundary distortions, label inconsistencies) that cannot be derived mechanically from raw counts alone.
 
 ### Scoring
-- **Add a rating to each section** — each of the 8 analysis sections (311, crime, property mix, permits, entertainment, traffic safety, gun violence, green space) could be assigned a score indicating how the neighborhood stacks up for that category relative to Boston as a whole. This could be achieved programmatically using the raw data counts and thresholds, without requiring additional LLM calls.
+- **Add a rating to each section** — each of the 8 analysis sections (311, crime, property mix, permits, entertainment, traffic safety, gun violence, green space) could be assigned a score indicating how the neighborhood stacks up for that category relative to Boston as a whole. The `neighborhood_tiers.json` data is the foundation for this — the tier values can be surfaced as visual badges in the analysis report.
 
 ### Prompting
 - **Inject persisted user preferences into the agent prompt** — at analysis time, fetch the user's saved household type and property preferences from the `user_preferences` table and pass them to the summarization node. This removes the need for the frontend form to collect them on every search and ensures the agent always has buyer context.
