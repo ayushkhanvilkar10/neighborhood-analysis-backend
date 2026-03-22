@@ -11,6 +11,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://neighborhood-analysis-frontend.vercel.app",
+        "https://www.the-hunt.tech",
     ],
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],
