@@ -1,10 +1,23 @@
-# Neighborhood Analysis Agent
+# Agent Documentation
 
-A LangGraph-powered agent that analyzes Boston neighborhoods by making eight parallel calls to the Boston Open Data API and the ArcGIS REST API, then synthesizing the results into a structured report using GPT-4o. Supports optional buyer personalization via household type and property preferences.
+This folder contains two LangGraph-powered agents that together drive the AI features of The Hunt:
+
+| Agent | File | Pattern | Trigger |
+|---|---|---|---|
+| **Neighborhood Analysis Agent** | `neighborhood_analysis.py` | Fan-out / fan-in (parallel) | `POST /searches` |
+| **Chat Agent** | `chat_agent.py` | ReAct (tool-calling loop) | WebSocket `/ws/chat/{session_id}` |
+
+Both agents use GPT-4o and query the Boston Open Data CKAN API. Neither uses a LangGraph checkpointer — the analysis agent is stateless by design, and the chat agent reconstructs conversation history from Supabase on every WebSocket message.
 
 ---
 
-## Architecture
+## Agent 1 — Neighborhood Analysis Agent
+
+### Overview
+
+A parallel fan-out/fan-in LangGraph graph. Eight fetch nodes run concurrently against the Boston Open Data API and the ArcGIS REST API, each writing their results to a shared `context` list. Once all eight complete, a single `summarize` node passes the full context to GPT-4o and returns a validated nine-field structured report. Supports optional buyer personalization via household type and property preferences.
+
+### Architecture
 
 ```
 START
@@ -18,20 +31,19 @@ START
   └── fetch_green_space     ─┘
 ```
 
-All eight fetch nodes run in parallel using LangGraph's fan-out/fan-in pattern. Each node writes its result to a shared `context` list in state using an `operator.add` reducer. Once all eight finish, LangGraph fans back in to the `summarize` node, which passes the full context to GPT-4o and returns a validated nine-field report.
+All eight fetch nodes fan out from `START` simultaneously using LangGraph's parallel edge pattern. Each node appends its result to `context` via an `operator.add` reducer. LangGraph fans back in automatically once all eight nodes complete, then calls `summarize`.
 
----
-
-## Graph State
+### Graph State
 
 ```python
 class State(TypedDict):
-    neighborhood:         str         # e.g. "Jamaica Plain"
-    street_name:          str         # e.g. "CREIGHTON ST" (uppercase, as in BPD dataset)
-    zip_code:             str         # e.g. "02130"
-    household_type:       str | None  # e.g. "partner", "family", "single" — optional
+    neighborhood:         str          # e.g. "Jamaica Plain"
+    street_name:          str          # e.g. "CREIGHTON ST" (uppercase, as in BPD dataset)
+    zip_code:             str          # e.g. "02130"
+    household_type:       str | None   # e.g. "partner", "family", "single" — optional
     property_preferences: list[str] | None  # e.g. ["Condo"] — max 2, optional
-    context: Annotated[list[str], operator.add]  # populated by the eight fetch nodes
+    context:   Annotated[list[str],  operator.add]  # populated by the eight fetch nodes
+    raw_stats: Annotated[list[dict], operator.add]  # structured stats for UI display
 ```
 
 **Output:**
@@ -47,22 +59,25 @@ class OutputState(TypedDict):
     gun_violence:        str   # Analysis of shootings and shots fired in the district
     green_space:         str   # Analysis of trees and open space in the neighborhood
     overall_verdict:     str   # Synthesized buyer-focused verdict across all datasets
+    raw_stats:           list[dict]  # Structured crime, property, and 311 data for UI cards
 ```
 
----
+`raw_stats` is populated by `fetch_crime`, `fetch_property`, and `fetch_311` at fetch time — no extra LLM calls required. The router injects `neighborhood_tiers` before saving to Supabase.
 
-## Buyer Personalization
+### Buyer Personalization
 
 When `household_type` and/or `property_preferences` are provided, the `summarize` node injects them into the human message sent to GPT-4o:
 
 ```
 Buyer profile: partner
-Property preference: Condo
+Property preference: Condo (RESIDENTIAL CONDO)
 ```
 
-The system prompt then instructs the LLM to:
+Property preference labels are translated to their Boston assessment `LU_DESC` equivalents via `PROPERTY_PREF_TO_LU_DESC` so the LLM sees the exact strings present in the context block.
+
+The system prompt instructs the LLM to:
 - Address the buyer directly by household type in both `property_mix` and `overall_verdict`
-- State explicitly whether the neighborhood has strong or weak inventory for the preferred property types, citing actual counts from the data
+- State explicitly whether strong or weak inventory exists for the preferred property types, citing actual counts
 - Never produce a generic verdict when buyer context is available
 
 **Supported `household_type` values:**
@@ -77,16 +92,20 @@ The system prompt then instructs the LLM to:
 
 **Supported `property_preferences` values** (max 2):
 
-`Condo`, `Single Family`, `Multi-Family`, `Townhouse`, `New Construction`, `Fixer-Upper`
+| Frontend Label | Boston Assessment LU_DESC |
+|---|---|
+| `Condo` | `RESIDENTIAL CONDO` |
+| `Single Family` | `SINGLE FAM DWELLING` |
+| `Two / Three Family` | `TWO-FAM DWELLING`, `THREE-FAM DWELLING` |
+| `Small Apartment` | `APT 4-6 UNITS` |
+| `Mid-Size Apartment` | `APT 7-30 UNITS` |
+| `Mixed Use` | `RES /COMMERCIAL USE`, `COMM MULTI-USE` |
 
----
-
-## Neighborhood Mappings
+### Neighborhood Mappings
 
 Two lookup dictionaries are defined at the top of `neighborhood_analysis.py`. Both use the same 21 canonical neighborhood keys.
 
-### `NEIGHBORHOOD_TO_DISTRICT`
-Maps neighborhood names to BPD district codes. Used by `fetch_crime` and `fetch_gun_violence`.
+**`NEIGHBORHOOD_TO_DISTRICT`** — Maps neighborhood names to BPD district codes. Used by `fetch_crime` and `fetch_gun_violence`.
 
 | Neighborhood | District |
 |---|---|
@@ -103,20 +122,17 @@ Maps neighborhood names to BPD district codes. Used by `fetch_crime` and `fetch_
 | Hyde Park | E18 |
 | Allston / Brighton | D14 |
 
-### `NEIGHBORHOOD_TO_BPRD`
-Maps neighborhood names to BPRD Trees ArcGIS neighborhood values. Used by `fetch_green_space`.
+**`NEIGHBORHOOD_TO_BPRD`** — Maps neighborhood names to BPRD Trees ArcGIS neighborhood values. Used by `fetch_green_space`.
 
 | Agent Neighborhood | BPRD Value |
 |---|---|
 | Back Bay / Beacon Hill | `Back Bay/Beacon Hill` |
-| Allston / Brighton | `Allston-Brighton` |
+| Allston / Brighton / Brighton | `Allston-Brighton` |
 | Fenway / Kenmore / Audubon Circle / Longwood | `Fenway/Longwood` |
 | Downtown / Financial District | `Central Boston` |
 | All others | Direct match |
 
----
-
-## Data Sources
+### Data Sources
 
 All CKAN sources are queried via:
 ```
@@ -130,167 +146,115 @@ https://services.arcgis.com/sFnw0xNflSi8J0uh/arcgis/rest/services/BPRD_Trees/Fea
 
 All HTTP calls are made asynchronously using `httpx.AsyncClient` with a 15-second timeout.
 
----
+### Fetch Nodes
 
-### Tool 1 — `fetch_311` (311 Service Requests)
+**`fetch_311`** — Top 15 most frequent 311 complaint types for the neighborhood.
+Dataset: `1a0b420d-99f1-4887-9851-990b2a5a6e17` · Filter: `neighborhood`
+Also populates `raw_stats` with a filtered list (noise/admin types excluded) and total count.
 
-Fetches the top 15 most frequent 311 complaint types for the neighborhood.
+**`fetch_crime`** — Top 15 most frequent crime types on the specific street in the current year.
+Dataset: `b973d8cb-eeb2-4e7e-99da-c92938efc9c0` · Filter: `DISTRICT` + `STREET` + `YEAR = '2026'`
+Also populates `raw_stats` with the top 6 meaningful offenses (procedural types excluded).
 
-**Dataset ID:** `1a0b420d-99f1-4887-9851-990b2a5a6e17`
-**Filter:** `neighborhood`
+**`fetch_property`** — Top 15 most frequent property use types in the zip code.
+Dataset: `ee73430d-96c0-423e-ad21-c4cfb54c8961` · Filter: `ZIP_CODE`
+Also populates `raw_stats` with counts bucketed by the six frontend property preference categories.
 
-**Signal types flagged in the prompt:**
-- `CE Collection` → Code Enforcement (city pursuing code violations)
-- `Needle Pickup` / `Encampments` → visible substance abuse or homelessness
-- `Unsatisfactory Living Conditions` / `Heat - Excessive/Insufficient` → housing quality issues
-- `Space Savers` → parking scarcity post-snowstorm
-- `Illegal Dumping` / `Abandoned Vehicles` → neighborhood neglect
+**`fetch_permits`** — Building permit activity by worktype, ordered by total declared investment value, rolling 2-year window.
+Dataset: `6ddcd912-32a0-43df-9908-63574f8c7e77` · Filter: `zip` + `issued_date >= CURRENT_DATE - INTERVAL '2 years'`
 
----
+**`fetch_entertainment`** — Entertainment unit type breakdown for the zip code (venue count + total units).
+Dataset: `1c4c1f7c-9a2a-4f4f-85a7-d3462c6bc9cb` · Filter: `zip` + `status = 'Active'`
 
-### Tool 2 — `fetch_crime` (Crime & Safety)
+**`fetch_traffic_safety`** — Runs three concurrent queries for the specific street: crash counts by mode type since 2022, top 5 hotspot intersections since 2022, all-time fatality records.
+Crash dataset: `e4bfe397-6bfc-49c5-9367-c879fac7401d` · Fatality dataset: `92f18923-d4ec-4c17-9405-4e0da63e1d6c`
+Filter: `street OR xstreet1 OR xstreet2 = street_name`
 
-Fetches the top 15 most frequent crime types on the specific street in the current year.
+**`fetch_gun_violence`** — Runs two concurrent queries for the BPD district: shooting victims (Fatal/Non-Fatal) since 2022, shots fired total and ballistics-confirmed count since 2022.
+Shootings dataset: `73c7e069-701f-4910-986d-b950f46c91a1` · Shots fired dataset: `c1e4e6ac-8a84-4b48-8a23-7b2645a32ede`
+Filter: `district` (resolved via `NEIGHBORHOOD_TO_DISTRICT`)
 
-**Dataset ID:** `b973d8cb-eeb2-4e7e-99da-c92938efc9c0`
-**Filter:** `DISTRICT` (resolved via `NEIGHBORHOOD_TO_DISTRICT`) + `STREET` + `YEAR = '2026'`
+**`fetch_green_space`** — Runs three concurrent queries: total tree count via ArcGIS, open space breakdown by type with acreage, total usable recreational acres excluding cemeteries.
+BPRD Trees: ArcGIS FeatureServer · Open space dataset: `61c0239f-c8fd-47de-8375-2405382ef37c`
 
-**Signal types flagged in the prompt:**
-- `INVESTIGATE PERSON` / `INVESTIGATE PROPERTY` → procedural, not actual crimes
-- Auto theft, drug offenses, robbery, threats → flagged explicitly
-- Low counts on a residential street → noted as reassuring
-- If fewer than 10 incidents, data limitation noted briefly at end of field
+### Summarization Node
 
----
-
-### Tool 3 — `fetch_property` (Property Assessment)
-
-Fetches the top 15 most frequent property use types in the zip code.
-
-**Dataset ID:** `ee73430d-96c0-423e-ad21-c4cfb54c8961`
-**Filter:** `ZIP_CODE`
-
-**Signal types flagged in the prompt:**
-- `CONDO PARKING (RES)` → parking sold separately, extra cost
-- `SUBSD HOUSING S-8` → Section 8 subsidized housing
-- `CITY OF BOSTON` / `BOST REDEVELOP AUTH` → publicly owned land
-- `RES LAND (Unusable)` → vacant lots, blight or future development
-- Two- and three-family home dominance → rental-heavy neighborhood
+After all eight fetch nodes complete, `summarize` calls `llm_with_structure` (`ChatOpenAI` with `gpt-4o` and `.with_structured_output(NeighborhoodReport)`) with the full `context` list. The system prompt instructs GPT-4o to act as a straight-talking buyer-focused analyst — flagging red flags plainly, citing specific numbers, blending live data with training-data knowledge of Boston's neighborhoods, and producing an `overall_verdict` of at least 250 words with a direct buyer-type recommendation.
 
 ---
 
-### Tool 4 — `fetch_permits` (Building Permits)
+## Agent 2 — Chat Agent
 
-Fetches building permit activity by worktype, ordered by total declared investment value, over a rolling 2-year window.
+### Overview
 
-**Dataset ID:** `6ddcd912-32a0-43df-9908-63574f8c7e77`
-**Filter:** `zip` + `issued_date >= CURRENT_DATE - INTERVAL '2 years'`
+A streaming ReAct agent built on LangGraph's `MessagesState`. The assistant node decides which tools to call based on the user's question — it only fetches the data that is relevant to the query rather than running all tools on every turn. The agent is stateless: no LangGraph checkpointer is attached. Conversation history is persisted in Supabase (`chat_messages` table) and reconstructed by the WebSocket handler on every incoming message.
 
-**Worktype codes flagged in the prompt:**
-- `ERECT` → new construction
-- `COB` → Certificate of Occupancy (completed projects)
-- `NROCC` → new occupancy permit
-- `CHGOCC` → change of occupancy (conversion pressure)
-- `INTEXT` / `INTREN` / `EXTREN` → renovation of existing stock
-- `INTDEM` → interior demolition (precedes gut renovation)
-- `SOL` / `INSUL` → sustainability investment, owner-occupier signal
+### Architecture
 
----
+```
+START → assistant ──► tools_condition ──► ToolNode ──► assistant ──► ... ──► END
+                  └──► END (if no tool call)
+```
 
-### Tool 5 — `fetch_entertainment` (Entertainment Licenses)
+The ReAct loop continues until the assistant produces a response with no tool calls, at which point `tools_condition` routes to `END`.
 
-Fetches entertainment unit type breakdown for the zip code — showing how many venues have each entertainment type and total units.
+### Tools (7)
 
-**Dataset ID:** `1c4c1f7c-9a2a-4f4f-85a7-d3462c6bc9cb`
-**Filter:** `zip` + `status = 'Active'`
+| Tool | Input | Data Source | Use When |
+|---|---|---|---|
+| `fetch_311` | `neighborhood` | Boston 311 dataset | Complaints, noise, trash, code enforcement, quality of life |
+| `fetch_crime` | `neighborhood`, `street` | BPD crime dataset | Safety or crime on a specific street |
+| `fetch_property` | `zip_code` | Boston property assessment | Housing types, property mix, condos, rental stock |
+| `fetch_permits` | `zip_code` | Building permits dataset | Development, construction, renovation, investment trends |
+| `fetch_entertainment` | `zip_code` | Entertainment licenses dataset | Nightlife, bars, restaurants, noise levels |
+| `fetch_traffic_safety` | `street` | Vision Zero crash + fatality datasets | Traffic crashes, pedestrian/cyclist safety, dangerous intersections |
+| `fetch_gun_violence` | `neighborhood` | BPD shootings + shots fired datasets | Shootings, gun violence, district-level safety |
 
-**Interpretation guidance in the prompt:**
-- `Widescreen TV` / `Audio Device` / `Radio` → casual bar and restaurant scene, low noise
-- `Disc Jockey` / `Dancing by Patrons` / `Instrument` / `Vocal` → active nightlife, higher noise
-- `Stage Play` / `Floor Show` / `Karaoke` → arts and performance culture
-- High DJ / Dancing counts → flagged for noise-sensitive buyers
+All tools are `@tool`-decorated async functions. The LLM receives their docstrings as tool descriptions and decides at runtime which to call based on the user's question. Multiple tools can be called in a single turn.
 
----
+### State
 
-### Tool 6 — `fetch_traffic_safety` (Vision Zero Crashes + Fatalities)
+Uses LangGraph's built-in `MessagesState` — a list of LangChain message objects (`HumanMessage`, `AIMessage`, `ToolMessage`). The WebSocket handler reconstructs this from Supabase on every incoming message and passes it directly to `stream_chat`.
 
-Runs three concurrent queries for the specific street:
-- Crash counts by mode type (`mv`, `ped`, `bike`) since 2022
-- Top 5 hotspot intersections by crash frequency since 2022
-- All-time fatality records with mode, intersection, and date
+### Zip Code Resolution
 
-**Crash dataset ID:** `e4bfe397-6bfc-49c5-9367-c879fac7401d`
-**Fatality dataset ID:** `92f18923-d4ec-4c17-9405-4e0da63e1d6c`
-**Filter:** `street OR xstreet1 OR xstreet2 = street_name`
+Many tools require a zip code. Rather than asking the user, the system prompt embeds a full `neighborhood → zip code` mapping. Rules:
+- Single-zip neighborhoods (e.g. Back Bay → `02116`): resolved automatically, tool called immediately.
+- Multi-zip neighborhoods (e.g. Dorchester has 4 zips): agent asks the user which part they mean before calling the tool.
 
-**Key signals:**
-- Pedestrian and cyclist crashes → most buyer-relevant, flagged explicitly
-- Named hotspot intersections → cited with crash counts
-- Any fatality → flagged with mode, location, and date
-- Zero fatalities → stated as a meaningful positive
+### Streaming
 
----
+Tokens are streamed via `graph.astream_events(version="v2")`. Only `on_chat_model_stream` events from the `assistant` node are yielded — tool call internals are filtered out. The WebSocket handler in `routers/ws.py` pipes these tokens to the client one at a time and sends `[DONE]` when the turn is complete.
 
-### Tool 7 — `fetch_gun_violence` (Shootings + Shots Fired)
+```python
+async def stream_chat(messages: list, config: dict):
+    async for event in graph.astream_events({"messages": messages}, config, version="v2"):
+        if (
+            event["event"] == "on_chat_model_stream"
+            and event["metadata"].get("langgraph_node") == "assistant"
+        ):
+            token = event["data"]["chunk"].content
+            if token:
+                yield token
+```
 
-Runs two concurrent queries for the BPD district:
-- Shooting victims grouped by `Fatal` / `Non-Fatal` since 2022
-- Total shots fired incidents and ballistics-confirmed count since 2022
+### History Reconstruction
 
-**Shootings dataset ID:** `73c7e069-701f-4910-986d-b950f46c91a1`
-**Shots Fired dataset ID:** `c1e4e6ac-8a84-4b48-8a23-7b2645a32ede`
-**Filter:** `district` (resolved via `NEIGHBORHOOD_TO_DISTRICT`)
+The chat agent has no memory between turns. On every WebSocket message the handler:
+1. Saves the incoming human message to Supabase
+2. Fetches the full session history from `chat_messages` ordered by `created_at`
+3. Reconstructs it as a list of `HumanMessage` / `AIMessage` objects
+4. Passes the full list to `stream_chat`
 
-**Key signals:**
-- Total victims with Fatal / Non-Fatal breakdown → cited with exact numbers
-- Fatal shootings → highest severity, flagged explicitly
-- Shots fired total → signals active gun presence even without victims
-- Data is district-level, not street-level → noted for buyer context
+This means the agent always has complete context without a checkpointer.
 
 ---
 
-### Tool 8 — `fetch_green_space` (BPRD Trees + Open Space)
-
-Runs three concurrent queries:
-- Total tree count for the neighborhood via ArcGIS REST API
-- Open space breakdown by type with acreage via CKAN
-- Total usable recreational acres excluding cemeteries via CKAN
-
-**BPRD Trees:** ArcGIS FeatureServer — `BPRD_Trees/FeatureServer/0/query`
-**Filter:** `neighborhood` (resolved via `NEIGHBORHOOD_TO_BPRD`)
-
-**Open Space dataset ID:** `61c0239f-c8fd-47de-8375-2405382ef37c`
-**Filter:** `DISTRICT` (uses neighborhood name directly)
-
-**Key signals:**
-- Total tree count → canopy density proxy
-- `Parks, Playgrounds & Athletic Fields` → most buyer-relevant open space type
-- `Urban Wilds` → natural woodland, high value for nature-oriented buyers
-- `Community Gardens` → engaged, sustainability-minded community
-- `Cemeteries & Burying Grounds` → excluded from recreational acre total
-- High tree count + high recreational acres → strong livability signal
-
----
-
-## Summarization Node
-
-After all eight fetch nodes complete, `summarize` is called with the full `context` list. It uses `llm_with_structure` (`ChatOpenAI` with `gpt-4o` and `.with_structured_output(NeighborhoodReport)`) to produce a validated nine-field response.
-
-The system prompt instructs the LLM to act as a straight-talking buyer-focused analyst. It is explicitly told to:
-- Flag red flags plainly without softening
-- Cite specific numbers for every field
-- Connect signals across datasets
-- Address the buyer by household type and evaluate inventory for preferred property types when that context is provided
-- Never carry data quality caveats into the `overall_verdict`
-- Produce an `overall_verdict` of at least 150 words with a direct buyer-type recommendation
-
----
-
-## Environment Variables Required
+## Shared Environment Variables
 
 | Variable | Purpose |
 |---|---|
-| `OPENAI_API_KEY` | Required — used by `ChatOpenAI` to call GPT-4o |
+| `OPENAI_API_KEY` | Required — used by `ChatOpenAI` to call GPT-4o in both agents |
 | `LANGSMITH_API_KEY` | Optional — enables LangSmith tracing |
 | `LANGSMITH_TRACING` | Optional — set to `true` to activate tracing |
 
@@ -298,7 +262,7 @@ The system prompt instructs the LLM to act as a straight-talking buyer-focused a
 
 ## Valid Neighborhoods
 
-The following neighborhood strings are supported. They must match exactly as entered:
+The following 21 neighborhood strings are supported by both agents. They must match exactly:
 
 ```
 Allston, Allston / Brighton, Back Bay, Beacon Hill, Brighton,
