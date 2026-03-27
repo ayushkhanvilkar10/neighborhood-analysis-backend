@@ -1,4 +1,5 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, field_validator
@@ -63,3 +64,46 @@ class ChatMessageResponse(BaseModel):
     role:       str   # 'human' | 'ai'
     content:    str
     created_at: datetime
+
+
+# ─────────────────────────────────────────────
+# User preferences
+# ─────────────────────────────────────────────
+
+HouseholdType = Literal[
+    "Living solo",
+    "Couple / Partner",
+    "Family with kids",
+    "Retiree / Empty nester",
+    "Investor",
+]
+
+PropertyPreference = Literal[
+    "Condo",
+    "Single Family",
+    "Two / Three Family",
+    "Small Apartment",
+    "Mid-Size Apartment",
+    "Mixed Use",
+]
+
+
+class UserPreferencesUpdate(BaseModel):
+    """Request body for PUT /preferences. Both fields optional."""
+    household_type:       HouseholdType | None = None
+    property_preferences: list[PropertyPreference] | None = None
+
+    @field_validator("property_preferences")
+    @classmethod
+    def max_two(cls, v: list[str] | None) -> list[str] | None:
+        if v and len(v) > 2:
+            raise ValueError("Maximum 2 property preferences allowed")
+        return v
+
+
+class UserPreferencesResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    household_type:       str | None = None
+    property_preferences: list[str] | None = None
+    updated_at:           datetime | None = None
