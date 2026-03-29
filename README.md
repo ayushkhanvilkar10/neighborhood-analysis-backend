@@ -25,6 +25,9 @@ All protected endpoints require an `Authorization: Bearer <jwt_token>` header. T
 | `POST`   | `/searches`        | Protected  | Run agent analysis and save search               |
 | `GET`    | `/searches`        | Protected  | Retrieve all saved searches for the current user |
 | `DELETE` | `/searches/{id}`   | Protected  | Delete a saved search by ID (owner only)         |
+| `GET`    | `/preferences`     | Protected  | Retrieve the current user's saved preferences    |
+| `PUT`    | `/preferences`     | Protected  | Create or update user preferences (upsert)       |
+| `DELETE` | `/preferences`     | Protected  | Reset user preferences (delete row)              |
 
 **POST /searches request body:**
 
@@ -33,7 +36,7 @@ All protected endpoints require an `Authorization: Bearer <jwt_token>` header. T
   "neighborhood": "Back Bay",
   "street": "NEWBURY ST",
   "zip_code": "02116",
-  "household_type": "partner",
+  "household_type": "Couple / Partner",
   "property_preferences": ["Condo"]
 }
 ```
@@ -67,6 +70,33 @@ The `analysis` field in the response (and in saved searches returned by `GET /se
 
 `raw_stats` is populated by the parallel fetch nodes at analysis time — no extra LLM calls required. `neighborhood_tiers` is a static lookup from `agent/neighborhood_tiers.json` injected at the router level before saving to Supabase.
 
+**PUT /preferences request body:**
+
+Both fields are optional. The frontend auto-saves preferences on change so they persist across sessions.
+
+```json
+{
+  "household_type": "Couple / Partner",
+  "property_preferences": ["Condo", "Single Family"]
+}
+```
+
+Allowed `household_type` values: `"Living solo"`, `"Couple / Partner"`, `"Family with kids"`, `"Retiree / Empty nester"`, `"Investor"`.
+
+Allowed `property_preferences` values (max 2): `"Condo"`, `"Single Family"`, `"Two / Three Family"`, `"Small Apartment"`, `"Mid-Size Apartment"`, `"Mixed Use"`.
+
+**GET /preferences response:**
+
+```json
+{
+  "household_type": "Couple / Partner",
+  "property_preferences": ["Condo", "Single Family"],
+  "updated_at": "2026-03-27T00:20:17.052549Z"
+}
+```
+
+Returns empty defaults (`null` fields, no `updated_at`) if no preferences have been saved yet.
+
 ## Project Structure
 
 ```
@@ -76,7 +106,8 @@ neighborhood-analysis-backend/
 ├── database.py                      # Supabase client initialization
 ├── models.py                        # Pydantic v2 request/response models
 ├── routers/
-│   └── searches.py                  # Endpoint handlers — loads neighborhood_tiers.json at startup
+│   ├── searches.py                  # Endpoint handlers — loads neighborhood_tiers.json at startup
+│   └── preferences.py               # User preferences CRUD (GET, PUT, DELETE)
 ├── agent/
 │   ├── neighborhood_analysis.py     # Parallel 8-node LangGraph analysis agent
 │   ├── chat_agent.py                # Streaming ReAct chat agent (7 tools)
@@ -107,7 +138,7 @@ The full ranking methodology, SQL queries used, and tier tables are documented i
 
 ## Row Level Security
 
-Row Level Security ensures that even though all users' data lives in the same tables, each user can only read, write, and delete their own rows. The `auth.uid()` function returns the UUID of the currently authenticated user from the JWT token. This is enforced at the **PostgreSQL level**, not just in application code. All three tables — `saved_searches`, `chat_sessions`, and `chat_messages` — have RLS enabled with identical per-user policies.
+Row Level Security ensures that even though all users' data lives in the same tables, each user can only read, write, and delete their own rows. The `auth.uid()` function returns the UUID of the currently authenticated user from the JWT token. This is enforced at the **PostgreSQL level**, not just in application code. All four tables — `saved_searches`, `chat_sessions`, `chat_messages`, and `user_preferences` — have RLS enabled with per-user policies. The `user_preferences` table additionally has an UPDATE policy since preferences are edited over time, unlike searches and messages which are write-once.
 
 ## Local Setup
 
@@ -146,7 +177,7 @@ Visit [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) for the interacti
 
 ## Supabase Database Setup
 
-The app uses three tables. Run all SQL blocks below in the **Supabase SQL Editor** in order.
+The app uses four tables. Run all SQL blocks below in the **Supabase SQL Editor** in order.
 
 ---
 
@@ -248,6 +279,49 @@ CREATE POLICY "Users can delete their own messages"
 
 ---
 
+### Table 4 — `user_preferences`
+
+Stores per-user household type and property preferences so they don't need to be re-entered on every search. One row per user, enforced by a `UNIQUE` constraint on `user_id`. The backend uses an upsert pattern (insert on first save, update thereafter). The `household_type` column has a `CHECK` constraint limiting it to the five allowed values. The `property_preferences` column is a Postgres text array with a max length of 2. Unlike the other tables, this table has an `updated_at` timestamp instead of `created_at` since preferences are edited over time, and includes an UPDATE RLS policy.
+
+```sql
+CREATE TABLE user_preferences (
+  id                    UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id               UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL UNIQUE,
+  household_type        TEXT CHECK (household_type IN (
+                          'Living solo',
+                          'Couple / Partner',
+                          'Family with kids',
+                          'Retiree / Empty nester',
+                          'Investor'
+                        )),
+  property_preferences  TEXT[] DEFAULT '{}' CHECK (array_length(property_preferences, 1) <= 2),
+  updated_at            TIMESTAMPTZ DEFAULT now()
+);
+```
+
+```sql
+ALTER TABLE user_preferences ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can insert their own preferences"
+  ON user_preferences FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can view their own preferences"
+  ON user_preferences FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their own preferences"
+  ON user_preferences FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete their own preferences"
+  ON user_preferences FOR DELETE
+  USING (auth.uid() = user_id);
+```
+
+---
+
 ## Deployment
 
 - Deployed on **Railway** via GitHub integration.
@@ -269,7 +343,7 @@ CREATE POLICY "Users can delete their own messages"
 - **Adding more streets will allow a more complete crime picture** — once parallel and intersecting streets are included in the state, the crime and traffic safety tools can query across all of them, giving the buyer a much richer signal.
 
 ### Data & Database
-- **Add a `user_preferences` Supabase table** — persist household type and property preferences per user so they do not need to be re-entered on every search. The table should be keyed by `user_id` with RLS enforced. At analysis time, the backend reads from this table and injects the preferences into the agent prompt automatically.
+- ~~**Add a `user_preferences` Supabase table**~~ ✅ — Done. The `user_preferences` table persists household type and property preferences per user, keyed by `user_id` with RLS enforced. The frontend auto-saves preferences on change via `PUT /preferences` and loads them on dashboard mount via `GET /preferences`.
 - **Add a Supabase table for neighborhood-level georeferenced records** — create a table for dumping 311 request and crime records that include coordinates (lat/long). This table would be populated at analysis time and queried by the map visualization layer rather than storing large coordinate arrays in the `analysis` JSONB field of `saved_searches`.
 - **Automate neighborhood tier computation via an agentic pipeline** — the current `neighborhood_tiers.json` is a static file. Long-term, a LangGraph pipeline on a Railway cron job (weekly) should query the Boston Open Data endpoints, apply the consolidation and correction logic documented in `Neighborhood_Rankings.md`, and upsert results into a `neighborhood_tiers` Supabase table. The LLM correction node handles the knowledge-based reranking (e.g. district boundary distortions, label inconsistencies) that cannot be derived mechanically from raw counts alone.
 
