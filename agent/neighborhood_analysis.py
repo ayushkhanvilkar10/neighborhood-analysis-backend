@@ -76,6 +76,39 @@ NEIGHBORHOOD_TO_BPRD = {
     "West Roxbury":                                     "West Roxbury",
 }
 
+# Zip code → name + entertainment density tiers (high / moderate / low)
+# Tiers are relative to all Boston zip codes for each license category.
+# Used in summarize to give the LLM context for raw entertainment license numbers.
+ZIP_CODE_INFO = {
+    "02108": {"name": "Downtown / Beacon Hill",                     "widescreen_tv": "moderate", "audio_device": "moderate", "disc_jockey": "high"},
+    "02109": {"name": "Downtown / Financial District (Waterfront)",  "widescreen_tv": "moderate", "audio_device": "moderate", "disc_jockey": "high"},
+    "02110": {"name": "Downtown / Financial District",              "widescreen_tv": "moderate", "audio_device": "moderate", "disc_jockey": "moderate"},
+    "02111": {"name": "Downtown / Chinatown",                       "widescreen_tv": "high",     "audio_device": "moderate", "disc_jockey": "moderate"},
+    "02113": {"name": "North End",                                  "widescreen_tv": "high",     "audio_device": "moderate", "disc_jockey": "moderate"},
+    "02114": {"name": "Beacon Hill / West End",                     "widescreen_tv": "moderate", "audio_device": "moderate", "disc_jockey": "high"},
+    "02115": {"name": "Fenway / Longwood",                          "widescreen_tv": "moderate", "audio_device": "moderate", "disc_jockey": "moderate"},
+    "02116": {"name": "Back Bay / Bay Village",                     "widescreen_tv": "high",     "audio_device": "high",     "disc_jockey": "high"},
+    "02118": {"name": "South End",                                  "widescreen_tv": "moderate", "audio_device": "high",     "disc_jockey": "low"},
+    "02119": {"name": "Roxbury",                                    "widescreen_tv": "low",      "audio_device": "low",      "disc_jockey": "low"},
+    "02120": {"name": "Mission Hill",                               "widescreen_tv": "low",      "audio_device": "low",      "disc_jockey": "low"},
+    "02121": {"name": "Dorchester (North)",                         "widescreen_tv": "low",      "audio_device": "low",      "disc_jockey": "low"},
+    "02122": {"name": "Dorchester (Edward Everett Square)",         "widescreen_tv": "moderate", "audio_device": "moderate", "disc_jockey": "moderate"},
+    "02124": {"name": "Dorchester (Codman Square / Four Corners)",  "widescreen_tv": "low",      "audio_device": "low",      "disc_jockey": "moderate"},
+    "02125": {"name": "Dorchester (Savin Hill / Jones Hill)",       "widescreen_tv": "moderate", "audio_device": "moderate", "disc_jockey": "moderate"},
+    "02126": {"name": "Mattapan",                                   "widescreen_tv": "low",      "audio_device": "low",      "disc_jockey": "low"},
+    "02127": {"name": "South Boston",                               "widescreen_tv": "high",     "audio_device": "high",     "disc_jockey": "high"},
+    "02128": {"name": "East Boston",                                "widescreen_tv": "high",     "audio_device": "high",     "disc_jockey": "moderate"},
+    "02129": {"name": "Charlestown",                                "widescreen_tv": "moderate", "audio_device": "moderate", "disc_jockey": "low"},
+    "02130": {"name": "Jamaica Plain",                              "widescreen_tv": "moderate", "audio_device": "moderate", "disc_jockey": "moderate"},
+    "02131": {"name": "Roslindale",                                 "widescreen_tv": "low",      "audio_device": "low",      "disc_jockey": "low"},
+    "02132": {"name": "West Roxbury",                               "widescreen_tv": "low",      "audio_device": "low",      "disc_jockey": "moderate"},
+    "02134": {"name": "Allston",                                    "widescreen_tv": "moderate", "audio_device": "high",     "disc_jockey": "moderate"},
+    "02135": {"name": "Brighton",                                   "widescreen_tv": "moderate", "audio_device": "moderate", "disc_jockey": "moderate"},
+    "02136": {"name": "Hyde Park",                                  "widescreen_tv": "moderate", "audio_device": "moderate", "disc_jockey": "moderate"},
+    "02210": {"name": "South Boston Waterfront / Seaport",          "widescreen_tv": "high",     "audio_device": "high",     "disc_jockey": "high"},
+    "02215": {"name": "Fenway / Kenmore",                           "widescreen_tv": "high",     "audio_device": "high",     "disc_jockey": "high"},
+}
+
 
 # ─────────────────────────────────────────────
 # 2. State schemas
@@ -688,9 +721,13 @@ sys_msg = SystemMessage(content=(
     "  - Draw on your knowledge of this neighborhood's development trajectory in the 2020s: "
     "mid-transformation or established, and what this investment signals for the next 3-5 years.\n\n"
     "## Entertainment Scene\n"
-    "  - You will receive entertainment license data with unit types, venue counts, and total units. "
-    "Do not quote these terms or numbers directly. Instead, use them as signals to characterize "
-    "the neighborhood's entertainment personality.\n"
+    "  - You will receive raw entertainment license data with unit types, venue counts, and total units. "
+    "This is your primary input — analyze what the mix of licenses tells you about the neighborhood. "
+    "You will also receive a pre-computed entertainment profile that ranks this zip code's casual dining, "
+    "bar, and nightlife density as high, moderate, or low relative to all Boston neighborhoods. "
+    "Use this to contextualize the raw numbers — it tells you whether the counts you are looking at "
+    "are typical, above average, or sparse for Boston. "
+    "Do not quote license terms or numbers directly. Describe the neighborhood's entertainment personality.\n"
     "  - The data is a proxy for what the neighborhood feels like in the evening and on weekends. "
     "A high count of screen and audio-based licenses means a bar and restaurant scene built around "
     "casual dining and sports TV. A high count of DJ, dancing, and live music licenses means active "
@@ -796,12 +833,25 @@ async def summarize(state: State) -> dict:
     else:
         pref_line = ""
 
+    # Build entertainment profile line from pre-computed tiers
+    zip_info = ZIP_CODE_INFO.get(state["zip_code"], {})
+    if zip_info:
+        entertainment_line = (
+            f"Entertainment profile for {zip_info['name']} ({state['zip_code']}): "
+            f"casual dining/bar scene: {zip_info.get('widescreen_tv', 'unknown')}, "
+            f"background music scene: {zip_info.get('audio_device', 'unknown')}, "
+            f"nightlife/DJ scene: {zip_info.get('disc_jockey', 'unknown')}\n"
+        )
+    else:
+        entertainment_line = ""
+
     user_msg = HumanMessage(content=(
         f"Neighborhood: {state['neighborhood']}\n"
         f"Street: {state['street_name']}\n"
         f"Zip Code: {state['zip_code']}\n"
         + buyer_line
         + pref_line
+        + entertainment_line
         + "\n"
         + "\n\n".join(state["context"])
     ))
