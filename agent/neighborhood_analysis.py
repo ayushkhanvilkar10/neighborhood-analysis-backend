@@ -156,28 +156,30 @@ class State(TypedDict):
 
 
 class OutputState(TypedDict):
-    requests_311:        str
-    crime_safety:        str
-    property_mix:        str
-    permit_activity:     str
-    entertainment_scene: str
-    traffic_safety:      str
-    gun_violence:        str
-    green_space:         str
-    overall_verdict:     str
-    raw_stats:           list[dict]
+    requests_311:           str
+    crime_safety:           str
+    property_mix:           str
+    permit_activity:        str
+    entertainment_scene:    str
+    traffic_safety:         str
+    gun_violence:           str
+    green_space:            str
+    overall_verdict:        str
+    closing_recommendation: str
+    raw_stats:              list[dict]
 
 
 class NeighborhoodReport(TypedDict):
-    requests_311:        str
-    crime_safety:        str
-    property_mix:        str
-    permit_activity:     str
-    entertainment_scene: str
-    traffic_safety:      str
-    gun_violence:        str
-    green_space:         str
-    overall_verdict:     str
+    requests_311:           str
+    crime_safety:           str
+    property_mix:           str
+    permit_activity:        str
+    entertainment_scene:    str
+    traffic_safety:         str
+    gun_violence:           str
+    green_space:            str
+    overall_verdict:        str
+    closing_recommendation: str
 
 
 # ─────────────────────────────────────────────
@@ -771,7 +773,9 @@ sys_msg = SystemMessage(content=(
     "  - Never soften or hedge — a buyer has the right to know this plainly.\n\n"
     "## Green Space\n"
     "  - You will receive three sub-blocks: total tree count, open space breakdown by type, and total recreational acres.\n"
-    "  - Always state the total tree count — high numbers signal a green, well-canopied neighborhood.\n"
+    "  - Always state the total tree count — this is one of the most tangible green space signals. "
+    "A neighborhood with 10,000+ trees feels noticeably different on the street than one with 2,000. "
+    "Name the count and say what it means for the day-to-day feel of walking and living here.\n"
     "  - Reference the open space breakdown by type and cite total recreational acres excluding cemeteries.\n"
     "  - 'Parks, Playgrounds & Athletic Fields' = most buyer-relevant category — cite count and acreage.\n"
     "  - 'Urban Wilds' = natural woodland, high value for nature-oriented buyers.\n"
@@ -806,10 +810,11 @@ sys_msg = SystemMessage(content=(
     "how traffic safety relates to crime patterns, how entertainment density relates to property mix and lifestyle fit.\n"
     "3. Name specific red flags a buyer must know before committing — be explicit with numbers, not vague.\n"
     "4. Name specific green flags that support buying — be specific with numbers and neighborhood context.\n"
-    "5. Close with a direct, preference-aware recommendation: given this buyer's household type and property "
-    "preferences, should they buy here, look elsewhere, or proceed with specific conditions? "
+    "5. Do NOT include a closing recommendation in overall_verdict. Instead, write your final, direct "
+    "recommendation in the separate closing_recommendation field — one to two sentences stating plainly "
+    "whether this person should move here, look elsewhere, or proceed with specific conditions. "
     "Name what would have to be true for this to be the right move. "
-    "Be direct — a buyer making a major financial decision deserves a real opinion, not hedged generalities."
+    "Be direct — someone making a major decision deserves a real opinion, not hedged generalities."
 ))
 
 
@@ -857,15 +862,16 @@ async def summarize(state: State) -> dict:
     ))
     report = await llm_with_structure.ainvoke([sys_msg, user_msg])
     return {
-        "requests_311":        report["requests_311"],
-        "crime_safety":        report["crime_safety"],
-        "property_mix":        report["property_mix"],
-        "permit_activity":     report["permit_activity"],
-        "entertainment_scene": report["entertainment_scene"],
-        "traffic_safety":      report["traffic_safety"],
-        "gun_violence":        report["gun_violence"],
-        "green_space":         report["green_space"],
-        "overall_verdict":     report["overall_verdict"],
+        "requests_311":           report["requests_311"],
+        "crime_safety":           report["crime_safety"],
+        "property_mix":           report["property_mix"],
+        "permit_activity":        report["permit_activity"],
+        "entertainment_scene":    report["entertainment_scene"],
+        "traffic_safety":         report["traffic_safety"],
+        "gun_violence":           report["gun_violence"],
+        "green_space":            report["green_space"],
+        "overall_verdict":        report["overall_verdict"],
+        "closing_recommendation": report["closing_recommendation"],
     }
 
 

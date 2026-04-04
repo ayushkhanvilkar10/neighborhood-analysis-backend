@@ -13,7 +13,6 @@ app.add_middleware(
     allow_origins=[
         "https://neighborhood-analysis-frontend.vercel.app",
         "https://www.the-hunt.tech",
-        "http://localhost:3000",
     ],
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type"],

@@ -41,17 +41,18 @@ async def create_search(search: SearchCreate, current=Depends(get_current_user))
     })
 
     analysis_dict = {
-        "requests_311":        agent_result["requests_311"],
-        "crime_safety":        agent_result["crime_safety"],
-        "property_mix":        agent_result["property_mix"],
-        "permit_activity":     agent_result["permit_activity"],
-        "entertainment_scene": agent_result["entertainment_scene"],
-        "traffic_safety":      agent_result["traffic_safety"],
-        "gun_violence":        agent_result["gun_violence"],
-        "green_space":         agent_result["green_space"],
-        "overall_verdict":     agent_result["overall_verdict"],
-        "raw_stats":           agent_result.get("raw_stats", []),
-        "neighborhood_tiers":  NEIGHBORHOOD_TIERS.get(search.neighborhood),
+        "requests_311":           agent_result["requests_311"],
+        "crime_safety":           agent_result["crime_safety"],
+        "property_mix":           agent_result["property_mix"],
+        "permit_activity":        agent_result["permit_activity"],
+        "entertainment_scene":    agent_result["entertainment_scene"],
+        "traffic_safety":         agent_result["traffic_safety"],
+        "gun_violence":           agent_result["gun_violence"],
+        "green_space":            agent_result["green_space"],
+        "overall_verdict":        agent_result["overall_verdict"],
+        "closing_recommendation": agent_result["closing_recommendation"],
+        "raw_stats":              agent_result.get("raw_stats", []),
+        "neighborhood_tiers":     NEIGHBORHOOD_TIERS.get(search.neighborhood),
     }
 
     # Insert row with analysis already populated
