@@ -15,6 +15,9 @@ class SearchCreate(BaseModel):
     zip_code:             str
     household_type:       str | None = None
     property_preferences: list[str] | None = None
+    buyer_or_renter:      str | None = None
+    commute_mode:         str | None = None
+    interests:            list[str] | None = None
 
     @field_validator("property_preferences")
     @classmethod
@@ -87,11 +90,40 @@ PropertyPreference = Literal[
     "Mixed Use",
 ]
 
+BuyerOrRenter = Literal["Buyer", "Renter"]
+
+CommuteMode = Literal[
+    "Car",
+    "Public transit",
+    "Bike",
+    "Walk",
+    "Remote / No commute",
+]
+
+Interest = Literal[
+    "eat out",
+    "go out for drinks",
+    "grab coffee",
+    "attend live events",
+    "browse local shops",
+    "run & cycle",
+    "go for walks",
+    "walk my dog",
+    "explore parks & nature",
+    "garden",
+    "cook at home",
+    "order takeout",
+    "watch TV",
+]
+
 
 class UserPreferencesUpdate(BaseModel):
-    """Request body for PUT /preferences. Both fields optional."""
+    """Request body for PUT /preferences. All fields optional."""
     household_type:       HouseholdType | None = None
     property_preferences: list[PropertyPreference] | None = None
+    buyer_or_renter:      BuyerOrRenter | None = None
+    commute_mode:         CommuteMode | None = None
+    interests:            list[Interest] | None = None
 
     @field_validator("property_preferences")
     @classmethod
@@ -106,4 +138,7 @@ class UserPreferencesResponse(BaseModel):
 
     household_type:       str | None = None
     property_preferences: list[str] | None = None
+    buyer_or_renter:      str | None = None
+    commute_mode:         str | None = None
+    interests:            list[str] | None = None
     updated_at:           datetime | None = None

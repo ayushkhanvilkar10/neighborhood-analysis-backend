@@ -72,12 +72,15 @@ The `analysis` field in the response (and in saved searches returned by `GET /se
 
 **PUT /preferences request body:**
 
-Both fields are optional. The frontend auto-saves preferences on change so they persist across sessions.
+All fields are optional. The frontend auto-saves preferences on change so they persist across sessions.
 
 ```json
 {
   "household_type": "Couple / Partner",
-  "property_preferences": ["Condo", "Single Family"]
+  "property_preferences": ["Condo", "Single Family"],
+  "buyer_or_renter": "Buyer",
+  "commute_mode": "Public transit",
+  "interests": ["eat out", "go out for drinks", "walk my dog"]
 }
 ```
 
@@ -85,12 +88,21 @@ Allowed `household_type` values: `"Living solo"`, `"Couple / Partner"`, `"Family
 
 Allowed `property_preferences` values (max 2): `"Condo"`, `"Single Family"`, `"Two / Three Family"`, `"Small Apartment"`, `"Mid-Size Apartment"`, `"Mixed Use"`.
 
+Allowed `buyer_or_renter` values: `"Buyer"`, `"Renter"`.
+
+Allowed `commute_mode` values: `"Car"`, `"Public transit"`, `"Bike"`, `"Walk"`, `"Remote / No commute"`.
+
+Allowed `interests` values (no limit): `"eat out"`, `"go out for drinks"`, `"grab coffee"`, `"attend live events"`, `"browse local shops"`, `"run & cycle"`, `"go for walks"`, `"walk my dog"`, `"explore parks & nature"`, `"garden"`, `"cook at home"`, `"order takeout"`, `"watch TV"`.
+
 **GET /preferences response:**
 
 ```json
 {
   "household_type": "Couple / Partner",
   "property_preferences": ["Condo", "Single Family"],
+  "buyer_or_renter": "Buyer",
+  "commute_mode": "Public transit",
+  "interests": ["eat out", "go out for drinks", "walk my dog"],
   "updated_at": "2026-03-27T00:20:17.052549Z"
 }
 ```
@@ -281,7 +293,7 @@ CREATE POLICY "Users can delete their own messages"
 
 ### Table 4 — `user_preferences`
 
-Stores per-user household type and property preferences so they don't need to be re-entered on every search. One row per user, enforced by a `UNIQUE` constraint on `user_id`. The backend uses an upsert pattern (insert on first save, update thereafter). The `household_type` column has a `CHECK` constraint limiting it to the five allowed values. The `property_preferences` column is a Postgres text array with a max length of 2. Unlike the other tables, this table has an `updated_at` timestamp instead of `created_at` since preferences are edited over time, and includes an UPDATE RLS policy.
+Stores per-user household type and property preferences so they don't need to be re-entered on every search, along with lifestyle preferences (buyer/renter status, commute mode, and interests) that give the analysis agent richer context to tailor its recommendations. One row per user, enforced by a `UNIQUE` constraint on `user_id`. The backend uses an upsert pattern (insert on first save, update thereafter). The `household_type` column has a `CHECK` constraint limiting it to the five allowed values. The `property_preferences` column is a Postgres text array with a max length of 2. The `buyer_or_renter` and `commute_mode` columns are `TEXT` with `CHECK` constraints limiting them to their respective allowed values. The `interests` column is a Postgres text array validated via a `<@` (contained-by) check against the 13 allowed values, with no max selection limit. Unlike the other tables, this table has an `updated_at` timestamp instead of `created_at` since preferences are edited over time, and includes an UPDATE RLS policy.
 
 ```sql
 CREATE TABLE user_preferences (
@@ -295,6 +307,31 @@ CREATE TABLE user_preferences (
                           'Investor'
                         )),
   property_preferences  TEXT[] DEFAULT '{}' CHECK (array_length(property_preferences, 1) <= 2),
+  buyer_or_renter       TEXT CHECK (buyer_or_renter IN ('Buyer', 'Renter')),
+  commute_mode          TEXT CHECK (commute_mode IN (
+                          'Car',
+                          'Public transit',
+                          'Bike',
+                          'Walk',
+                          'Remote / No commute'
+                        )),
+  interests              TEXT[] DEFAULT '{}' CHECK (
+                          interests <@ ARRAY[
+                            'eat out',
+                            'go out for drinks',
+                            'grab coffee',
+                            'attend live events',
+                            'browse local shops',
+                            'run & cycle',
+                            'go for walks',
+                            'walk my dog',
+                            'explore parks & nature',
+                            'garden',
+                            'cook at home',
+                            'order takeout',
+                            'watch TV'
+                          ]::TEXT[]
+                        ),
   updated_at            TIMESTAMPTZ DEFAULT now()
 );
 ```
@@ -350,7 +387,7 @@ CREATE POLICY "Users can delete their own preferences"
 - **Create use cases for ReAct Chat agent that involve use of multiple tools** — design and document multi-tool scenarios (e.g. comparing crime + green space across neighborhoods) to stress-test and showcase the chat agent's reasoning capabilities.
 
 ### Data & Database
-- ~~**Add a `user_preferences` Supabase table**~~ ✅ — Done. The `user_preferences` table persists household type and property preferences per user, keyed by `user_id` with RLS enforced. The frontend auto-saves preferences on change via `PUT /preferences` and loads them on dashboard mount via `GET /preferences`.
+- ~~**Add a `user_preferences` Supabase table**~~ ✅ — Done. The `user_preferences` table persists household type and property preferences per user, keyed by `user_id` with RLS enforced. The frontend auto-saves preferences on change via `PUT /preferences` and loads them on dashboard mount via `GET /preferences`. Household type and property preferences are integrated into the search form UI and submitted with every analysis request.
 - **Add a Supabase table for neighborhood-level georeferenced records** — create a table for dumping 311 request and crime records that include coordinates (lat/long). This table would be populated at analysis time and queried by the map visualization layer rather than storing large coordinate arrays in the `analysis` JSONB field of `saved_searches`.
 - **Automate neighborhood tier computation via an agentic pipeline** — the current `neighborhood_tiers.json` is a static file. Long-term, a LangGraph pipeline on a Railway cron job (weekly) should query the Boston Open Data endpoints, apply the consolidation and correction logic documented in `Neighborhood_Rankings.md`, and upsert results into a `neighborhood_tiers` Supabase table. The LLM correction node handles the knowledge-based reranking (e.g. district boundary distortions, label inconsistencies) that cannot be derived mechanically from raw counts alone.
 

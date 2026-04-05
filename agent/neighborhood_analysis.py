@@ -149,6 +149,9 @@ class State(TypedDict):
     zip_code:             str
     household_type:       str | None
     property_preferences: list[str] | None
+    buyer_or_renter:      str | None
+    commute_mode:         str | None
+    interests:            list[str] | None
     # Parallel fetch nodes all append to this list (operator.add reducer)
     context:   Annotated[list[str],  operator.add]
     # Structured stats from fetch nodes — for UI display, not passed to LLM
@@ -662,7 +665,13 @@ sys_msg = SystemMessage(content=(
     "building permits, entertainment licenses, traffic safety, gun violence, green space). "
     "Produce a structured report with exactly nine fields as defined. "
     "Each field should be substantive — aim for 3-5 sentences minimum per section, "
-    "combining the numbers from the data with what you know about this neighborhood.\n\n"
+    "combining the numbers from the data with what you know about this neighborhood.\n"
+    "IMPORTANT: Never reiterate the user's preferences back to them. They already know what they selected. "
+    "Do not write phrases like 'according to your interests', 'aligned with your preference for', "
+    "'as someone who likes to', or 'given that you are a renter'. "
+    "Instead, use their preferences silently to shape what you emphasize, what you lead with, "
+    "and what judgment you render. Write as if you naturally know what matters to this person "
+    "and are giving them a direct, informed opinion — not a report that summarizes their own input back to them.\n\n"
     "## 311 Service Requests\n"
     "  - 'CE Collection' = Code Enforcement Collection: the city is actively pursuing a landlord or "
     "property owner to fix a code violation. High counts mean properties on this street or in this "
@@ -676,7 +685,13 @@ sys_msg = SystemMessage(content=(
     "  - 'Parking Enforcement' at high volume = active enforcement pressure on a dense street.\n"
     "  - Use your knowledge of this neighborhood to contextualize these numbers — "
     "a high CE Collection count in a rapidly gentrifying area means something different than in a "
-    "long-neglected one. Say what it means for someone moving here today.\n\n"
+    "long-neglected one. Say what it means for someone moving here today.\n"
+    "  - If a commute mode is provided, use it to determine which 311 categories to emphasize. "
+    "Car → parking enforcement and Space Savers are the headline issues. "
+    "Walk → sidewalk repair and accessibility complaints are the headline. "
+    "Bike → street cleaning and road surface issues matter for safe cycling. "
+    "Public transit or Remote → parking pressure is less relevant; focus on street-level livability "
+    "like trash, noise, and sidewalk quality instead.\n\n"
     "## Crime & Safety\n"
     "  - Context matters: commercial streets have higher expected counts than residential ones. "
     "Calibrate your interpretation accordingly and name the street type.\n"
@@ -709,14 +724,19 @@ sys_msg = SystemMessage(content=(
     "  - Open by stating the neighborhood's approximate geographic size and calibrating the numbers against it — "
     "the reader needs to know whether this is concentrated activity they will encounter daily "
     "or investment spread across a large area.\n"
-    "  - Write for renters first, like a friend warning someone before they sign a lease. "
+    "  - If housing intent is Renter (or no intent is provided), write for renters first, "
+    "like a friend warning someone before they sign a lease. "
     "Every insight should land on something concrete: what to expect at renewal, whether their building type "
     "is at risk of conversion, whether new supply will help or hurt their rent. "
     "High new construction — say whether units are likely luxury or mid-market. "
     "High conversions — flag displacement risk. "
     "High renovations — say whether landlords are retaining tenants or justifying increases. "
-    "Low activity — note it as a stability signal.\n"
-    "  - For buyers, include a line or two in the middle on appreciation potential. "
+    "Low activity — note it as a stability signal. "
+    "For buyers, include a line or two in the middle on appreciation potential.\n"
+    "  - If housing intent is Buyer, invert the priority: lead with what the development activity signals "
+    "about property value trajectory and appreciation potential. Is this a neighborhood where investment is "
+    "accelerating or plateauing? What do the dollar values tell you about the market tier being targeted? "
+    "Then mention renter-relevant context secondarily (e.g. rental income potential if they plan to rent out a unit). "
     "Never close with the buyer note.\n"
     "  - Close by connecting permits to at least one other dataset — "
     "311, crime, green space, or traffic — to show the combined picture.\n"
@@ -744,7 +764,19 @@ sys_msg = SystemMessage(content=(
     "for noise on residential streets — especially for someone deciding whether to sign a lease nearby.\n"
     "  - If a buyer profile is provided, say whether this entertainment scene is a fit or a friction "
     "point for that household type — a couple without kids has different tolerance than a family "
-    "with young children.\n\n"
+    "with young children.\n"
+    "  - If interests are provided, they OVERRIDE the default approach for this section. "
+    "Do not describe the license data generically — instead, write about what this person actually cares about. "
+    "'eat out' → describe the actual restaurant scene: cuisine variety, price range, whether it's destination dining or neighborhood spots. Name specific types of restaurants from your knowledge. "
+    "'go out for drinks' → describe the bar scene: dive bars vs cocktail lounges, what a Friday night feels like. "
+    "'grab coffee' → describe the café culture: are there independent coffee shops, is it a neighborhood where you can post up with a laptop? "
+    "'attend live events' → name actual venues, music halls, or cultural institutions from your knowledge. "
+    "'browse local shops' → describe the retail character: independent boutiques vs chains, what makes the shopping strip distinctive. "
+    "'order takeout' → note delivery-friendly restaurant density and cuisine variety. "
+    "ANTI-SIGNALS: If interests include 'watch TV' or 'cook at home', "
+    "high entertainment density and bar noise are negatives, not positives. "
+    "Frame a loud nightlife scene as a disruption risk. "
+    "Say plainly whether this neighborhood will be too noisy for someone who wants quiet evenings.\n\n"
     "## Traffic Safety\n"
     "  - You will receive three sub-blocks: crash mode breakdown, hotspot intersections, and fatalities.\n"
     "  - Always state total crash count since 2022 and break it down by mode — motor vehicle, pedestrian, cyclist.\n"
@@ -756,7 +788,13 @@ sys_msg = SystemMessage(content=(
     "  - Commercial and arterial streets naturally see more crashes than quiet residential ones — calibrate.\n"
     "  - Use your knowledge of this street and neighborhood's traffic conditions in the 2020s — "
     "is this a known dangerous corridor? Have there been Vision Zero interventions here? "
-    "Does the data confirm or contradict the neighborhood's reputation?\n\n"
+    "Does the data confirm or contradict the neighborhood's reputation?\n"
+    "  - If a commute mode is provided, reorder your emphasis to match how this person will actually "
+    "use the street. Car → lead with motor vehicle crash frequency and parking-related incidents. "
+    "Bike → lead with cyclist crash counts and note whether the area has bike lanes or protected infrastructure. "
+    "Walk → lead with pedestrian crash counts and crosswalk safety at the named hotspot intersections. "
+    "Public transit → focus on pedestrian safety around transit stops and the walk to/from the station. "
+    "Remote → traffic safety is less central to daily life; note it briefly but don't over-weight it.\n\n"
     "## Gun Violence\n"
     "  - You will receive two sub-blocks: shooting victims and shots fired incidents since 2022.\n"
     "  - Always state total shooting victims and break down by Fatal vs Non-Fatal — cite exact numbers.\n"
@@ -784,14 +822,40 @@ sys_msg = SystemMessage(content=(
     "  - If a buyer profile is provided, tailor the green space analysis: families need playgrounds, "
     "retirees value walkable parks, investors care less.\n"
     "  - Use your knowledge of this neighborhood's parks and green corridors — are there well-known "
-    "parks nearby? Is the neighborhood walkable? Does the tree count reflect the street-level experience?\n\n"
-    "## Buyer Profile & Property Preference\n"
+    "parks nearby? Is the neighborhood walkable? Does the tree count reflect the street-level experience?\n"
+    "  - If interests are provided, they OVERRIDE the default approach for this section. "
+    "Do not give a generic green space summary — focus on what this person will actually use. "
+    "'walk my dog' → name off-leash dog parks, proximity to large parks for daily walks, and shaded routes. "
+    "'explore parks & nature' → name specific parks, urban wilds, and natural areas; cite acreage for the most relevant ones. "
+    "'garden' → highlight community garden count and acreage — this often gets skipped, but for gardeners it's a selling point. "
+    "'run & cycle' → name specific running paths, bike trails, and greenways from your knowledge — the Charles River Esplanade, the Emerald Necklace, the Southwest Corridor. Don't just say 'adjacent areas might be better.' "
+    "'go for walks' → assess the actual walking experience: tree canopy, sidewalk quality (reference 311 sidewalk repair data if relevant), and whether the streets feel pleasant to walk for leisure, not just commuting.\n\n"
+    "## Buyer Profile, Property Preference & Housing Intent\n"
     "  - If a buyer profile (household type) is provided, weave it throughout the analysis — "
     "not just in property_mix and overall_verdict, but wherever the data has implications for that buyer type.\n"
     "  - If property preferences are provided, always state in property_mix whether the neighborhood has "
     "strong or weak inventory for those specific types — cite the actual count from the data.\n"
     "  - In overall_verdict, name the buyer type and property preference explicitly. "
-    "Do not give a generic verdict when this context is available.\n\n"
+    "Do not give a generic verdict when this context is available.\n"
+    "  - If a housing intent is provided (Buyer or Renter), it fundamentally changes how you frame "
+    "the entire report. This is your primary audience signal — respect it everywhere:\n"
+    "  - RENTER: Your reader is evaluating whether to sign a lease here. "
+    "Lead with landlord quality signals (CE Collection, Unsatisfactory Living Conditions in 311), "
+    "lease renewal risk (permit activity driving rent increases), displacement pressure "
+    "(conversions, luxury new construction), and street-level livability (noise, parking, sidewalk quality). "
+    "In property_mix, focus on rental stock availability and what the tenure mix tells you about landlord behavior. "
+    "In building_permits, lead with what development means for rent trajectory and tenant stability. "
+    "In overall_verdict, frame the financial analysis around monthly cost and renewal risk, not appreciation. "
+    "The closing_recommendation should answer 'should I sign this lease?' not 'should I buy here?'\n"
+    "  - BUYER: Your reader is evaluating whether to purchase property here. "
+    "Lead with inventory availability for their preferred property types, appreciation trajectory "
+    "(permit investment as a signal), property tax implications, and long-term neighborhood trajectory. "
+    "In property_mix, focus on purchase inventory and competition for their preferred types. "
+    "In building_permits, lead with appreciation signal and investment momentum, then mention renter implications secondarily. "
+    "In overall_verdict, frame the financial analysis around equity, appreciation, and whether the neighborhood "
+    "is on an upward or downward trajectory. "
+    "The closing_recommendation should answer 'should I buy here?' with specific conditions.\n"
+    "  - If no housing intent is provided, write for a general audience and cover both perspectives briefly.\n\n"
     "## Overall Verdict\n"
     "Synthesize across all eight datasets into a comprehensive, substantive verdict of at least 250 words. "
     "Structure it as follows:\n"
@@ -804,6 +868,10 @@ sys_msg = SystemMessage(content=(
     "the neighborhood's reputation and evolution in the 2020s. "
     "Then pivot to a direct assessment of whether that character fits the buyer's profile and preferences — "
     "not a generic trajectory label, but a genuine answer to 'is this the right place for me?' "
+    "If housing intent, commute mode, or interests are provided, assess each: "
+    "does the neighborhood work practically for how they get around? "
+    "Does the entertainment and green space profile match what they like to do? "
+    "Does the financial picture make sense for a renter vs a buyer? "
     "If no buyer profile is provided, characterize who the neighborhood is currently attracting "
     "and who it may not suit.\n"
     "2. Connect the most important signals across datasets — how permit activity relates to 311 complaints, "
@@ -814,7 +882,10 @@ sys_msg = SystemMessage(content=(
     "recommendation in the separate closing_recommendation field — one to two sentences stating plainly "
     "whether this person should move here, look elsewhere, or proceed with specific conditions. "
     "Name what would have to be true for this to be the right move. "
-    "Be direct — someone making a major decision deserves a real opinion, not hedged generalities."
+    "Be direct — someone making a major decision deserves a real opinion, not hedged generalities.\n"
+    "  - When any preferences are provided (household type, property preference, housing intent, "
+    "commute mode, interests), name them explicitly in the verdict. Do not write a generic verdict "
+    "when you know who the reader is and what they care about."
 ))
 
 
@@ -822,21 +893,61 @@ async def summarize(state: State) -> dict:
     """Call the LLM with all fetched context and return the nine structured fields."""
     household = state.get("household_type")
     prefs     = state.get("property_preferences")
-    buyer_line = f"Buyer profile: {household}\n" if household else ""
+    bor       = state.get("buyer_or_renter")
+    commute   = state.get("commute_mode")
+    interests = state.get("interests")
 
-    # Translate frontend labels to dataset LU_DESC terms so the LLM
-    # sees the exact property type strings present in the context block
+    # ── Build a persona paragraph from all preferences ──────────────────
+    # Gives the LLM a coherent mental model of who it's writing for,
+    # rather than a disconnected checklist of fields.
+
+    # Translate frontend property labels to dataset LU_DESC terms
+    translated_prefs = []
     if prefs:
-        translated = []
         for p in prefs:
             lu_values = PROPERTY_PREF_TO_LU_DESC.get(p)
             if lu_values:
-                translated.append(f"{p} ({', '.join(lu_values)})")
+                translated_prefs.append(f"{p} ({', '.join(lu_values)})")
             else:
-                translated.append(p)
-        pref_line = f"Property preference: {', '.join(translated)}\n"
-    else:
-        pref_line = ""
+                translated_prefs.append(p)
+
+    def build_persona() -> str:
+        """Assemble a natural-language persona from user preferences."""
+        parts: list[str] = []
+
+        # Opening — who is this person?
+        if household and bor:
+            parts.append(f"a {household.lower()} looking to {'rent' if bor == 'Renter' else 'buy'}")
+        elif household:
+            parts.append(f"a {household.lower()}")
+        elif bor:
+            parts.append(f"a {'renter' if bor == 'Renter' else 'buyer'}")
+        else:
+            return ""  # no preferences at all — skip persona
+
+        # Commute
+        if commute:
+            commute_phrases = {
+                "Car": "who drives to work",
+                "Public transit": "who commutes by public transit",
+                "Bike": "who bikes to work",
+                "Walk": "who walks to work",
+                "Remote / No commute": "who works remotely",
+            }
+            parts.append(commute_phrases.get(commute, f"who commutes by {commute.lower()}"))
+
+        # Property preference
+        if translated_prefs:
+            parts.append(f"looking for: {', '.join(translated_prefs)}")
+
+        # Interests — list naturally
+        if interests:
+            parts.append(f"enjoys: {', '.join(interests)}")
+
+        persona = "Who you are writing for: " + ", ".join(parts) + "."
+        return persona
+
+    persona = build_persona()
 
     # Build entertainment profile line from pre-computed tiers
     zip_info = ZIP_CODE_INFO.get(state["zip_code"], {})
@@ -854,8 +965,7 @@ async def summarize(state: State) -> dict:
         f"Neighborhood: {state['neighborhood']}\n"
         f"Street: {state['street_name']}\n"
         f"Zip Code: {state['zip_code']}\n"
-        + buyer_line
-        + pref_line
+        + (f"{persona}\n" if persona else "")
         + entertainment_line
         + "\n"
         + "\n\n".join(state["context"])

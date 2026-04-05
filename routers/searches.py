@@ -38,6 +38,9 @@ async def create_search(search: SearchCreate, current=Depends(get_current_user))
         "zip_code":             search.zip_code,
         "household_type":       search.household_type,
         "property_preferences": search.property_preferences,
+        "buyer_or_renter":      search.buyer_or_renter,
+        "commute_mode":         search.commute_mode,
+        "interests":            search.interests,
     })
 
     analysis_dict = {

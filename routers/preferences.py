@@ -24,7 +24,7 @@ async def get_preferences(current=Depends(get_current_user)):
 
     result = (
         db.table("user_preferences")
-        .select("household_type, property_preferences, updated_at")
+        .select("household_type, property_preferences, buyer_or_renter, commute_mode, interests, updated_at")
         .eq("user_id", str(user.id))
         .execute()
     )
@@ -48,6 +48,9 @@ async def upsert_preferences(
         "user_id":              str(user.id),
         "household_type":       prefs.household_type,
         "property_preferences": prefs.property_preferences or [],
+        "buyer_or_renter":      prefs.buyer_or_renter,
+        "commute_mode":         prefs.commute_mode,
+        "interests":            prefs.interests or [],
         "updated_at":           datetime.now(timezone.utc).isoformat(),
     }
 
