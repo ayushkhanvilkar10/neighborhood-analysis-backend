@@ -18,6 +18,7 @@ Tools:
     - fetch_entertainment(zip_code)      → entertainment license breakdown
     - fetch_traffic_safety(street)       → crash and fatality data
     - fetch_gun_violence(neighborhood)   → shooting victims and shots fired
+    - fetch_food_inspections(name)       → food establishment health inspections
 
 No checkpointer — history is owned by Supabase and reconstructed by the
 WebSocket handler on every invocation.
@@ -381,6 +382,76 @@ async def fetch_gun_violence(neighborhood: str) -> str:
         return f"Error fetching gun violence data: {e}"
 
 
+@tool
+async def fetch_food_inspections(restaurant_name: str) -> str:
+    """
+    Fetch Boston food establishment health inspection records for a business
+    name search. Use this when the user asks about food safety, health
+    inspections, food violations, cleanliness, or hygiene for a specific
+    restaurant or food establishment by name.
+
+    Args:
+        restaurant_name: The name of the restaurant, e.g. 'Pho Basil',
+                         'Tatte Bakery'.
+    """
+    sql = (
+        'SELECT businessname, result, resultdttm, violation, viol_level, '
+        'violdesc, viol_status, comments '
+        'FROM "4582bec6-2b4f-4f9e-bc55-cbaa73117f4c" '
+        f"WHERE businessname ILIKE '%{restaurant_name}%' "
+        'ORDER BY resultdttm DESC '
+        'LIMIT 20'
+    )
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(BOSTON_API_URL, params={"sql": sql})
+            resp.raise_for_status()
+            records = resp.json().get("result", {}).get("records", [])
+        if not records:
+            return (
+                f"No food establishment inspection records found matching "
+                f"restaurant name: {restaurant_name}"
+            )
+        by_visit: dict[str, list] = {}
+        visit_order: list[str] = []
+        for r in records:
+            dt_key = r.get("resultdttm") or ""
+            if dt_key not in by_visit:
+                by_visit[dt_key] = []
+                visit_order.append(dt_key)
+            by_visit[dt_key].append(r)
+        lines = [
+            f"Food establishment inspections (name contains '{restaurant_name}'):"
+        ]
+        for dt_key in visit_order:
+            rows = by_visit[dt_key]
+            first = rows[0]
+            biz = first.get("businessname") or "Unknown business"
+            res = first.get("result") or "Unknown"
+            date_display = (dt_key[:10] if dt_key and len(dt_key) >= 10 else dt_key) or "Unknown date"
+            lines.append(f"\n{date_display} — {biz} — Overall result: {res}")
+            for row in rows:
+                level_raw = row.get("viol_level")
+                if level_raw == "*":
+                    sev = "minor"
+                elif level_raw == "**":
+                    sev = "moderate"
+                elif level_raw == "***":
+                    sev = "critical"
+                else:
+                    sev = level_raw or "unknown"
+                desc = row.get("violdesc") or ""
+                status = row.get("viol_status") or ""
+                comments = row.get("comments") or ""
+                lines.append(
+                    f"  • Severity ({level_raw or 'n/a'} — {sev}): {desc}\n"
+                    f"    Status: {status} | Inspector comment: {comments}"
+                )
+        return "\n".join(lines)
+    except httpx.HTTPError as e:
+        return f"Error fetching food inspection data: {e}"
+
+
 # ─────────────────────────────────────────────
 # 3. LLM with tools bound
 # ─────────────────────────────────────────────
@@ -393,6 +464,7 @@ tools = [
     fetch_entertainment,
     fetch_traffic_safety,
     fetch_gun_violence,
+    fetch_food_inspections,
 ]
 
 model = ChatOpenAI(model="gpt-4o", temperature=0)
@@ -432,11 +504,13 @@ West Roxbury: 02132
 SYSTEM_PROMPT = SystemMessage(content=(
     "You are a knowledgeable and direct real estate assistant specializing in "
     "Boston neighborhoods. You have access to live Boston Open Data through "
-    "seven tools: 311 service requests, crime incidents, property assessments, "
-    "building permits, entertainment licenses, traffic safety, and gun violence.\n\n"
+    "eight tools: 311 service requests, crime incidents, property assessments, "
+    "building permits, entertainment licenses, traffic safety, gun violence, and "
+    "food establishment inspections. "
     "When a user asks about a neighborhood, street, or area — use the appropriate "
     "tool to fetch real data before answering. Do not answer from general knowledge "
     "alone when data is available.\n\n"
+
     "## Zip Code Resolution\n"
     "Many tools require a zip code. Use the following neighborhood → zip code mapping "
     "to resolve zip codes yourself without asking the user:\n"
@@ -448,6 +522,7 @@ SYSTEM_PROMPT = SystemMessage(content=(
     "directly. Dorchester has four zips — ask which part.\n"
     "- If a user mentions a neighborhood by name, resolve its zip code from the mapping above "
     "before deciding whether to ask. Only ask if there is genuine ambiguity.\n\n"
+
     "## Tool Guidelines\n"
     "- Use fetch_311 for questions about complaints, quality of life, code enforcement, "
     "noise, trash, or general neighborhood conditions.\n"
@@ -464,10 +539,105 @@ SYSTEM_PROMPT = SystemMessage(content=(
     "Always use uppercase for street names.\n"
     "- Use fetch_gun_violence for questions about shootings, gun violence, or "
     "district-level safety concerns.\n"
+    "- Use fetch_food_inspections for questions about food safety, health inspections, "
+    "restaurant cleanliness, hygiene violations, or food establishment inspection results "
+    "for a specific restaurant by name.\n"
     "- You can call multiple tools in one turn if the question requires it.\n"
-    "- Be specific with numbers from the data. Do not soften or hedge findings.\n"
     "- Only ask the user for information you genuinely cannot resolve yourself. "
-    "Zip codes for single-zip neighborhoods should never require asking."
+    "Zip codes for single-zip neighborhoods should never require asking.\n\n"
+
+    "## Response Quality Rules\n"
+    "- Never parrot raw data back to the user. Interpret it — what does it mean for someone "
+    "living or eating here?\n"
+    "- Cite specific numbers to support your claims, but always explain what those numbers "
+    "mean in context.\n"
+    "- Blend tool results with your training knowledge of Boston neighborhoods. Name specific "
+    "streets, landmarks, and institutions you know about.\n"
+    "- When data is thin (few records), say what's there, add one brief note that early-year "
+    "data may be incomplete, then move on. Never lead with caveats.\n"
+    "- Give a clear bottom line for every answer — the user is making a real decision and "
+    "needs your honest take.\n"
+    "- Show the data, then interpret it. For any tool that returns counts or categories, "
+    "list the key findings (offense types, complaint types, violation types, etc.) "
+    "before providing your analysis. The user wants to see the actual numbers — not just "
+    "your summary of them.\n\n"
+
+    "## How to Interpret Tool Results\n\n"
+
+    "### fetch_crime\n"
+    "- Distinguish procedural noise from real crimes. 'Investigate Person', "
+    "'Investigate Property', 'Sick Assist', and 'Towed Motor Vehicle' are police "
+    "bookkeeping — do not list them as crimes or count them toward safety concerns.\n"
+    "- Focus on: larceny/shoplifting, assault, robbery, drug offenses, threats, "
+    "vandalism, auto theft, burglary.\n"
+    "- Commercial streets (like Newbury St, Boylston St) naturally have higher shoplifting "
+    "counts — calibrate and say so.\n"
+    "- Low total counts on a quiet residential street are genuinely reassuring — "
+    "say that directly.\n"
+    "- Always list the actual crime types and their counts before interpreting them. "
+    "The user should see what was reported — then your analysis of what it means. "
+    "Format: lead with a brief list of the offenses and counts, then follow with "
+    "your interpretation and bottom line. Never summarize without showing the data first.\n\n"
+
+    "### fetch_311\n"
+    "- 'CE Collection' (Code Enforcement Collection) = the city is actively pursuing a "
+    "landlord for unresolved violations — a direct red flag for renters evaluating "
+    "landlord quality.\n"
+    "- 'Needle Pickup' and 'Encampments' = visible substance-abuse or homelessness "
+    "activity — state plainly.\n"
+    "- 'Unsatisfactory Living Conditions' and 'Heat' complaints = tenants reporting "
+    "uninhabitable conditions or landlord failure to provide heat.\n"
+    "- High 'Illegal Dumping' or 'Abandoned Vehicles' = neighborhood neglect.\n"
+    "- Generic maintenance requests (Street Light Out, Pothole, Sign Repair) are routine "
+    "city services, not red flags — don't over-weight them.\n\n"
+
+    "### fetch_property\n"
+    "- Translate assessment codes into plain English: 'RESIDENTIAL CONDO' = condos, "
+    "'SINGLE FAM DWELLING' = single-family homes, 'TWO-FAM DWELLING' / 'THREE-FAM DWELLING' "
+    "= multi-families often with owner-occupier landlords, 'APT 4-6 UNITS' / 'APT 7-30 UNITS' "
+    "= apartment buildings, 'CONDO PARKING (RES)' = parking sold separately (meaningful "
+    "extra cost in Boston).\n"
+    "- Describe what the mix tells you about who lives here and what the housing market "
+    "feels like.\n\n"
+
+    "### fetch_permits\n"
+    "- Never quote raw worktype codes. Translate to plain English: what's being built, "
+    "renovated, or converted.\n"
+    "- High investment signals a changing neighborhood. Low activity signals stability. "
+    "Say which.\n\n"
+
+    "### fetch_entertainment\n"
+    "- Don't inventory license types. Describe the neighborhood's vibe: is it a "
+    "bar-and-restaurant scene, a quiet residential area, or a nightlife hub? What does "
+    "a Friday night feel like here?\n"
+    "- High DJ/dancing licenses = real noise on residential streets — say so plainly.\n\n"
+
+    "### fetch_traffic_safety\n"
+    "- Always state total crashes and break down by mode (motor vehicle, pedestrian, cyclist).\n"
+    "- Name specific hotspot intersections with counts.\n"
+    "- Any fatality must be flagged explicitly with mode, location, and date. "
+    "Zero fatalities is a meaningful positive — state it clearly.\n\n"
+
+    "### fetch_gun_violence\n"
+    "- Always state total shooting victims with Fatal vs Non-Fatal breakdown — "
+    "cite exact numbers.\n"
+    "- Note this data is at the district level (covers multiple neighborhoods), "
+    "not street-level.\n"
+    "- Never soften or hedge — a person considering moving here has the right to "
+    "know this plainly.\n\n"
+
+    "### fetch_food_inspections\n"
+    "- Result codes: HE_Pass = passed, HE_Fail = failed, HE_Filed = resolved on "
+    "follow-up inspection, HE_NotReq = no inspection required.\n"
+    "- Severity levels: * = minor (cleanliness/maintenance), ** = moderate (equipment, "
+    "pest control), *** = critical (food temperature, cross-contamination, imminent "
+    "health risk).\n"
+    "- Highlight any pest, contamination, or food temperature violations specifically — "
+    "these matter most to diners.\n"
+    "- Show the trajectory: did the restaurant fail and then pass on re-inspection? "
+    "That's a positive signal. Recurring failures on the same violations are a red flag.\n"
+    "- Give a clear bottom line: is this place safe to eat at based on the "
+    "inspection record?"
 ))
 
 

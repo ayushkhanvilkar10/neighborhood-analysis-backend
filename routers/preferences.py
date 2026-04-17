@@ -24,7 +24,7 @@ async def get_preferences(current=Depends(get_current_user)):
 
     result = (
         db.table("user_preferences")
-        .select("household_type, property_preferences, buyer_or_renter, commute_mode, interests, updated_at")
+        .select("household_type, property_preferences, buyer_or_renter, commute_mode, interests, onboarding_completed, updated_at")
         .eq("user_id", str(user.id))
         .execute()
     )
@@ -33,7 +33,7 @@ async def get_preferences(current=Depends(get_current_user)):
         return result.data[0]
 
     # No preferences saved yet — return empty defaults
-    return UserPreferencesResponse()
+    return UserPreferencesResponse(onboarding_completed=False)
 
 
 @router.put("/preferences", response_model=UserPreferencesResponse)
@@ -52,6 +52,7 @@ async def upsert_preferences(
         "commute_mode":         prefs.commute_mode,
         "interests":            prefs.interests or [],
         "updated_at":           datetime.now(timezone.utc).isoformat(),
+        **({"onboarding_completed": prefs.onboarding_completed} if prefs.onboarding_completed is not None else {}),
     }
 
     result = (

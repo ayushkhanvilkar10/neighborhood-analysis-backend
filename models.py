@@ -119,11 +119,12 @@ Interest = Literal[
 
 class UserPreferencesUpdate(BaseModel):
     """Request body for PUT /preferences. All fields optional."""
-    household_type:       HouseholdType | None = None
-    property_preferences: list[PropertyPreference] | None = None
-    buyer_or_renter:      BuyerOrRenter | None = None
-    commute_mode:         CommuteMode | None = None
-    interests:            list[Interest] | None = None
+    household_type:        HouseholdType | None = None
+    property_preferences:  list[PropertyPreference] | None = None
+    buyer_or_renter:       BuyerOrRenter | None = None
+    commute_mode:          CommuteMode | None = None
+    interests:             list[Interest] | None = None
+    onboarding_completed:  bool | None = None
 
     @field_validator("property_preferences")
     @classmethod
@@ -136,9 +137,10 @@ class UserPreferencesUpdate(BaseModel):
 class UserPreferencesResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    household_type:       str | None = None
-    property_preferences: list[str] | None = None
-    buyer_or_renter:      str | None = None
-    commute_mode:         str | None = None
-    interests:            list[str] | None = None
-    updated_at:           datetime | None = None
+    household_type:        str | None = None
+    property_preferences:  list[str] | None = None
+    buyer_or_renter:       str | None = None
+    commute_mode:          str | None = None
+    interests:             list[str] | None = None
+    onboarding_completed:  bool | None = None
+    updated_at:            datetime | None = None
